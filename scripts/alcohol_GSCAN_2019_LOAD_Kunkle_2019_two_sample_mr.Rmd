@@ -172,7 +172,7 @@ p1 <- mr_scatter_plot(res, dat)
 p1[[1]]
 ```
 
-Heterogeneity in effects, suggesting violating of IV or modelling assumptions, likely due to horizontal pleiotropy. Further discussion here: https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6659376/. Similar Q statistics for the IVW and MR Egger suggest the Egger is a no better fit than IVW.
+Heterogeneity in effects, suggesting violating of IV or modeling assumptions, likely due to horizontal pleiotropy. Further discussion here: https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6659376/. Similar Q statistics for the IVW and MR Egger suggest the Egger is a no better fit than IVW.
 ```{r}
 mr_heterogeneity(dat, method_list = methods.hetero) %>% quick_2smr_kable
 ```

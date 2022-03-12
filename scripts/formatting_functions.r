@@ -26,8 +26,8 @@ factor_APOE_012 = function(var) {
 
 # R11DRINK, Ever drink
 factor_ever_drink = function(var) {
-  var = factor(var, levels = c(0, 1), labels = c("Never drinker", "Ever drinker"))
-  var = relevel(var, ref = "Never drinker")
+  var = factor(var, levels = c(0, 1), labels = c("Doesn't drink", "Drinks"))
+  var = relevel(var, ref = "Doesn't drink")
   return(var)
 }
 
