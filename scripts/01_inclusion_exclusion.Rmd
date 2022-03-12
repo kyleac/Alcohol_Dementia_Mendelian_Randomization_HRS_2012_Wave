@@ -1,0 +1,183 @@
+---
+title: "01_inclusion_exclusion"
+author: "Kyle Abraham Campbell"
+date: "9/18/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(ggridges)
+library(gtsummary)
+library(haven)
+library(here)
+library(tidyverse)
+library(viridis)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, cache=TRUE}
+data = read_sas(here("data", "hrs_democoggen_wide20200910.sas7bdat"))
+#rand = read_sas(here(""))
+```
+
+genotyped
+Genetics were captured in '06, '08, '10, and '12
+```{r}
+data %>%
+  select(HHID, PN, matches("GENETICS\\d\\d")) %>%
+  mutate(genotyped = (GENETICS06 | GENETICS08 | GENETICS10 | GENETICS12)) %>%
+  summary(genotyped)
+#18996 genotyped individuals 
+
+# Two people with GENETICS06 = 2
+data %>%
+  select(GENETICS06) %>%
+  filter(GENETICS06 == 2)
+```
+
+```{r}
+data %>%
+  select(HHID, PN, matches("^AD\\d\\d")) %>%
+  mutate(phenotyped = (AD06 | AD08 | AD10 | AD12)) %>%
+  summary(phenotyped)
+#26,325 phenotyped individuals 
+```
+
+
+
+Source factor formatting functions
+```{r}
+source(here("scripts", "formatting_functions.r"))
+```
+
+```{r}
+graph <- data %>%
+  select(HHID, PN, RACE, WTCOHORT, AGE_LAST_NS, COG_LAST_NS) %>%
+  mutate(COG_LAST_NS = factor_cog_lw(COG_LAST_NS)) %>%
+  mutate(RACE = factor_race(RACE)) %>%
+  filter(RACE %in% c("White/Caucasian", "Black or African American"))
+
+ggplot(graph, mapping = aes(AGE_LAST_NS, color = COG_LAST_NS, fill = COG_LAST_NS)) + geom_density(alpha = 0.1) + theme_bw()
+
+ggplot(graph, mapping = aes(AGE_LAST_NS, color = COG_LAST_NS, fill = COG_LAST_NS)) + geom_density(alpha = 0.1) + theme_bw() + facet_wrap(vars(RACE))
+```
+
+## Dementia outcome distribution by Race/ethnicity and Year {.tabset}
+
+### All race/ethnicity
+
+```{r}
+ad_by_year_data = data %>%
+  select(RACE, matches("^AD\\d\\d"))  %>%
+  mutate(across(.cols = matches("^AD\\d\\d"), .fn = factor_cog_lw)) %>%
+  select(RACE, (matches("^AD\\d\\d"))) %>%
+  mutate(RACE = factor_race(RACE)) %>%
+  filter(RACE %in% c("White/Caucasian", "Black or African American")) %>%
+  mutate(across(RACE, droplevels))
+
+ad_by_year <- 
+  tbl_summary(
+    ad_by_year_data,
+    by = RACE,
+    missing_text = "Missing"
+  ) %>%
+  add_n() %>%
+  add_p() %>%
+  bold_labels()
+ad_by_year
+```
+
+### European and African Ancestry only
+```{r}
+ad_by_year_data = data %>%
+  select(RACE, matches("^AD\\d\\d"))  %>%
+  mutate(across(.cols = matches("^AD\\d\\d"), .fn = factor_cog_lw)) %>%
+  select(RACE, (matches("^AD\\d\\d"))) %>%
+  mutate(RACE = factor_race(RACE)) %>%
+  #filter(RACE %in% c("White/Caucasian", "Black or African American")) %>%
+  mutate(across(RACE, droplevels))
+
+ad_by_year <- 
+  tbl_summary(
+    ad_by_year_data,
+    by = RACE,
+    missing_text = "Missing"
+  ) %>%
+  add_n() %>%
+  add_p() %>%
+  bold_labels()
+ad_by_year
+```
+
+## {-}
+
+```{r}
+alc.data <- data %>%
+  mutate(drinkpweek = R11DRINKD*R11DRINKN) %>%
+  select(matches("R11DRINK"), drinkpweek)
+```
+
+Verifying successful creation of drinks/wk variable
+```{r}
+alc.table <- 
+  tbl_summary(
+    alc.data,
+    by = R11DRINKD
+  ) %>%
+  add_n()
+alc.table
+```
+
+Drinks per week by dementia status, and stratified by race (FILL NOT WORKING?)
+```{r}
+graph <- data %>%
+  mutate(drinkpweek = R11DRINKD*R11DRINKN) %>%
+  select(HHID, PN, RACE, WTCOHORT, AD12, drinkpweek) %>%
+  mutate(AD12 = factor_cog_lw(AD12)) %>%
+  mutate(RACE = factor_race(RACE)) %>%
+  filter(RACE %in% c("White/Caucasian", "Black or African American"))
+
+ggplot(graph, mapping = aes(drinkpweek, color = AD12)) + geom_density(alpha = 0.1) + theme_bw() + coord_cartesian(xlim = c(0,15))
+
+ggplot(graph, mapping = aes(drinkpweek, color = AD12)) + geom_density(alpha = 0.1) + theme_bw() + coord_cartesian(xlim = c(0,15)) + facet_wrap(vars(RACE))
+```
+
+```{r}
+age.by.ever.drink <- data %>%
+  select(HHID, PN, RACE, COG_LAST_NS, AGE_LAST_NS, R11DRINK)
+```
+
+
+```{r}
+bivar.data = data %>%
+  select(HHID, PN, RACE, COG_LAST_NS, AGE_LAST_NS, WTCOHORT, APOE012, R11DRINK)  %>% 
+  mutate(COG_LAST_NS = factor_cog_lw(COG_LAST_NS)) %>%
+  mutate(RACE = factor_race(RACE)) %>%
+  filter(RACE %in% c("White/Caucasian", "Black or African American")) %>%
+  mutate(across(RACE, droplevels)) %>%
+  mutate(APOE012 = factor_APOE_012(APOE012)) %>%
+  mutate(R11DRINK = factor_ever_drink(R11DRINK)) %>%
+  select(!c(HHID, PN))
+
+bivar.table <- 
+  tbl_summary(
+    bivar.data,
+    by = COG_LAST_NS
+  ) %>%
+  add_n() %>%
+  add_p()
+
+bivar.table
+```
+
+```{r}
+ggplot(bivar.data, aes(x = factor_ever_drink(R11DRINK), y = AGE_LAST_NS, fill = RACE)) + geom_violin()
+```
+
+drinkpweek
+```{r}
+data %>%
+  mutate(drinkpweek = R11DRINKD*R11DRINKN) %>%
+  select(HHID, PN, AD12, drinkpweek) %>%
+  filter(!is.na(AD12 & drinkpweek))
+```

@@ -1,0 +1,279 @@
+---
+title: "alcohol_LOAD_two_sample_mr"
+author: "Kyle Abraham Campbell"
+date: "9/26/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(gtsummary)
+library(here)
+library(knitr)
+library(parameters)
+library(readxl)
+library(tidymodels)
+library(tidyverse)
+
+#library(remotes)
+#remotes::install_github("MRCIEU/TwoSampleMR")
+library(TwoSampleMR)
+
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Helper function to output simple tables of TwoSampleMR package function results tables
+```{r}
+quick_2smr_kable <- function(x) {
+  return <-
+    x %>%
+    select(!c(id.exposure, id.outcome)) %>%
+    kable(digits = 2)
+  return(return)
+}
+```
+
+From Supplemental Table 5 from Liu et al., 2019. Same Alcohol consumption IVs used in Rosoff et al., 2020. A chr17 SNP rsid is labelled missing. Look into recovering with SNP database
+```{r full_GSCAN_Liu_2019_res}
+gscan.dpw <- read_excel(here("data", "gscan_dpw_full.xlsx"))
+head(gscan.dpw)
+```
+
+Phenotype variation explained (PVE) is a substitute for R^2 in summary GWAS data (h^2, heritability). Calculate F statistic from that, total F-stat based on mzfu's code
+https://stats.stackexchange.com/questions/56881/whats-the-relationship-between-r2-and-f-test
+Teslovich TM, Musunuru K, Smith AV, Edmondson AC, Stylianou IM, Koseki M, et al. Biological,
+clinical and population relevance of 95 loci for blood lipids. Nature. 2010;466:707–713.
+
+```{r}
+gscan.dpw.formatted <-
+  gscan.dpw %>%
+  rename_with(tolower) %>%
+  rename(
+    SNP = rsid,
+    effect_allele = "alternate allele",
+    other_allele = "reference allele",
+    eaf = "alternate allele frequency",
+    pval = pvalue,
+    samplesize = "effective n"
+  ) %>%
+  mutate(pve = (2*beta^2*eaf*(1-eaf))/(2*beta^2*eaf*(1-eaf)+se^2*2*n*eaf*(1-eaf))) %>%
+  mutate(fstat_snp = ((n-1-1)*pve)/1/(1-pve)^2) %>%
+  mutate(fstat = ((n-nrow(gscan.dpw)-1)*(sum(pve))/nrow(gscan.dpw)/(1-sum(pve))^2))
+
+names <- colnames(gscan.dpw.formatted)[1:12]
+gscan.dpw.formatted %>% select(names, pve, fstat_snp, fstat) %>% View
+```
+
+```{r}
+dat.exp <- format_data(gscan.dpw.formatted)
+# By default, clumps all index and secondary SNPs at a 10000kb resolution with r^2 > .001
+dat.exp.clump <- clump_data(dat.exp)
+```
+
+
+```{r }
+#raw.summary <- read_tsv(here("data", "chambers_ggt_GCST001277.txt"))
+#head(raw.summary)
+
+#write.csv(raw.summary, file = here("data", "chambers_raw.csv"), row.names = F)
+
+raw.summary <- read.csv(here("data", "chambers_ggt_GCST001277.csv"))
+head(raw.summary)
+```
+
+Phenotype variation explained (PVE) is a substitute for R^2 in summary GWAS data (h^2, heritability). Calculate F statistic from that, total F-stat based on mzfu's code
+https://stats.stackexchange.com/questions/56881/whats-the-relationship-between-r2-and-f-test
+Teslovich TM, Musunuru K, Smith AV, Edmondson AC, Stylianou IM, Koseki M, et al. Biological,
+clinical and population relevance of 95 loci for blood lipids. Nature. 2010;466:707–713.
+
+```{r}
+str_extract(raw.summary$X95..CI..TEXT., "\\d.\\d\\d") %>% as.numeric
+```
+
+
+```{r}
+summary <-
+  raw.summary %>%
+  rename_with(tolower) %>%
+  rename(
+    Phenotype = "disease.trait",
+    SNP = "snps",
+    beta = "or.or.beta",
+    effect_allele = "alternate.allele",
+    other_allele = "reference.allele",
+    eaf = "risk.allele.frequency",
+    pval = "p.value",
+    gene = "mapped_gene") %>%
+  mutate(
+    se = (((str_extract(raw.summary$X95..CI..TEXT., "\\d.\\d\\d") %>% as.numeric()) + beta)/1.96),
+    beta = beta/100,
+    se = se/100,
+    samplesize = 61089
+  ) %>%
+  mutate(pve = (2*beta^2*eaf*(1-eaf))/(2*beta^2*eaf*(1-eaf)+se^2*2*samplesize*eaf*(1-eaf))) %>%
+  mutate(fstat_snp = ((samplesize-1-1)*pve)/1/(1-pve)^2) %>%
+  mutate(fstat = ((samplesize-nrow(summary)-1)*(sum(pve))/nrow(summary)/(1-sum(pve))^2))
+
+#names <- colnames(gscan.dpw.formatted)[1:12]
+#gscan.dpw.formatted %>% select(names, pve, fstat_snp, fstat) %>% View
+```
+
+```{r}
+dat.out <- format_data(type = "outcome", summary)
+# By default, clumps all index and secondary SNPs at a 10000kb resolution with r^2 > .001
+#dat.exp.clump <- clump_data(dat.exp)
+```
+
+## Extract summary GWASs asnd harmonize
+
+Extract Alcohol IV from 2019 GSCAN Consortium paper in the IEU GWAS Catalog (ID: ieu-b-73), extract outcome data - Late Onset Alzheimer's Disease (Kunkle et al., 2019) from the IEU GWAS Catalog (ID: ieu-b-2), and harmonize
+
+```{r}
+alc_exp_dat <- dat.exp.clump
+#alc_exp_dat <- extract_instruments(outcomes = 'ieu-b-73')
+```
+
+```{r}
+#load_out_dat <- extract_outcome_data(snps = alc_exp_dat$SNP, outcomes = 'ieu-b-2')
+dat <- harmonise_data(alc_exp_dat, dat.out)
+```
+
+Select which 2SMR models to run
+```{r}
+methods.list <-
+  mr_method_list() %>%
+  filter(use_by_default == T | 
+           #heterogeneity_test == T | 
+           obj == "mr_ivw_mre") %>%
+  pull(obj)
+
+methods.hetero <-
+  mr_method_list() %>%
+  filter(heterogeneity_test == T) %>% # & 
+           #(use_by_default == T | 
+              #obj == "mr_ivw_mre")) %>% 
+  pull(obj)
+```
+
+Run 2SMR models
+```{r}
+res <- mr(dat, method_list = methods.list)
+```
+
+```{r}
+#res.or <- generate_odds_ratios(res)
+quick_2smr_kable(res)
+```
+
+No significant results with any of the default MR tests in TwoSampleMR. Simple mode prioritizes the collection of moderate inverse effect SNP clusters. Weighting in weighted mode attenuates this effect.
+
+```{r}
+p1 <- mr_scatter_plot(res, dat)
+p1[[1]]
+```
+
+Heterogeneity in effects, suggesting violating of IV or modelling assumptions, likely due to     horizontal pleiotropy. Further discussion here: https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6659376/
+```{r}
+mr_heterogeneity(dat, method_list = methods.hetero) %>% quick_2smr_kable
+```
+
+Egger intercept is not different than 0, suggests no bias due to directional horizontal pleiotropy
+```{r}
+mr_pleiotropy_test(dat) %>% quick_2smr_kable
+```
+
+rs56030824 appears to be an outlier here and is confirmed so with MR-PRESSO below.
+```{r}
+res_single <- mr_singlesnp(dat)
+p2 <- mr_forest_plot(res_single)
+p2[[1]]
+```
+
+LOO suggests there may be a few extreme outliers.
+```{r}
+res_loo <- mr_leaveoneout(dat)
+p3 <- mr_leaveoneout_plot(res_loo)
+p3[[1]]
+```
+
+rs7452999 is an outlier here, too.
+```{r}
+res_single <- mr_singlesnp(dat)
+p4 <- mr_funnel_plot(res_single)
+p4[[1]]
+```
+
+Steiger test of causal direction suggests proposed direction is accurate.
+```{r}
+out <- directionality_test(dat)
+quick_2smr_kable(out)
+```
+
+Increase bootstrap to 10000
+```{r}
+res.presso <- run_mr_presso(dat, NbDistribution = 2000, SignifThreshold = 0.05)
+```
+
+rs56030824 identified as an outlier. With it removed, estimate moves even closer to the null.
+```{r}
+res.presso[[1]]$`Main MR results`
+res.presso[[1]]$`MR-PRESSO results`$`Outlier Test`
+dat$SNP[52]
+```
+
+
+```{r}
+# Obtain estimates from all methods, and generate data metrics
+#res <- mr_wrapper(dat)
+
+# MR-MoE - predict the performance of each method
+#res_moe <- mr_moe(res, rf)
+```
+
+## Raw GSCAN summary statistics
+
+"Evaluating the relationship between alcohol consumption, tobacco use, and cardiovascular disease: A multivariable Mendelian randomization study" exposure instrument list from the same study source came up with 71 SNPs. Possibly updated? Possibly using proxy SNPs? No looks like the paper identifies these 71 SNPs before any outcome ?
+
+Full summary data from GSCAN below (https://conservancy.umn.edu/handle/11299/201564, with 23andMe removed, not available for public use). Should be identical to that presented in the paper, excluding 23andMe. Previous betas are reported based on the Wald statistic. Given the different ways of how each trait has been measured (binned, normalized, etc), we have since changed beta to be based on the chi square statistic instead using  the following transformation (below "beta", "statistic", and "af" refer to the respective column label in the summary statistic files):
+
+For continuous traits with assumed standard deviation of 1 for the phenotype:
+beta.est <- sign(beta.ori)*sqrt(statistic)*sqrt(1)/sqrt(2*N*af*(1-af));
+beta.sd <- sqrt(1/(2*N*af*(1-af)))
+
+For binary traits (var.y is the prevalence of cases. For our analysis, we took the mean prevalence across all studies in the analysis):
+beta.est <- sign(beta.ori)*sqrt(statistic)/sqrt(2*N*af*(1-af))/sqrt(var.y));
+beta.sd <- sqrt(1/sqrt(2*N*af*(1-af)*var.y));
+
+```{r import_GSCAN_results, include = F, eval = F}
+gscan.alc <- read.table(here("data", "DrinksPerWeek.txt"), header = T)
+
+gscan.alc %>%
+  group_by(RSID) %>%
+  tally
+
+#saveRDS(gscan.alc, here("data", "gscan_DrinksPerWeek.rda"))
+#gscan.alc <- readRDS(here("data", "gscan_DrinksPerWeek.rda"))
+```
+
+```{r, include = F, eval = F}
+exp <- 
+  gscan.pfilter %>%
+  rename_with(tolower) %>%
+  rename(
+    SNP = rsid,
+    effect_allele = alt,
+    other_allele = ref,
+    eaf = af,
+    pval = pvalue,
+    samplesize = effective_n
+  ) %>%
+  filter(SNP != ".")
+
+dat.exp <- format_data(exp)
+dat.exp.clump <- clump_data(dat.exp, clump_p1 = 5e-8, clump_p2 = 5e-8)
+```
+
+```{r pfilter_GSCAN_results, include = F, eval = F}
+#alc.exp.dat <- read_exposure_data(here("data", "gscan_DrinksPerWeek.rda"))
+gscan.pfilter <- gscan.alc %>% filter(PVALUE < 5e-8)
+gscan.pfilter %>% filter(RSID == ".")
+```
