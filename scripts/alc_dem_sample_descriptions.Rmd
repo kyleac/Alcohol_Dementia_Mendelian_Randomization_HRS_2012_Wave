@@ -1,0 +1,392 @@
+---
+title: "alc_dem_sample_descriptions"
+author: "Kyle A. Campbell"
+date: "2022-08-28"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(flextable)
+library(knitr)
+library(ggpubr)
+library(gtsummary) 
+library(here)
+library(skimr)
+library(tidymodels)
+library(tidyverse)
+library(webshot2) # For flextable image export
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+as.data.frame is ESSENTIAL for ivglm to accept these as valid data inputs
+```{r}
+# dat.start represents genetics-confirmed 2012 wave without exclusion yet
+dat.start <- readRDS(here("data", "analytic", "genetics_confirmed_2012_2022-09-18.rda"))
+ancestry.ea <- dat.start %>% filter(RACE == "Non-Hispanic White, European ancestry")
+ancestry.aa <- dat.start %>% filter(RACE == "Non-Hispanic Black, African ancestry")
+
+#TODO why is this formatting here
+# dat represents analytic sample starting with genetics-confirmed 2012 wave ancestry
+#dat <- readRDS(here("data", "analytic", "2022-09-18.gscan.dpw.1smr.xs.rda")) %>% as_tibble(.name_repair = "universal") %>% mutate(DEGREE = factor(DEGREE))
+
+dat <- readRDS(here("data", "analytic", "2022-12-09.current.consumption.gscan.dpw.1smr.xs.rda"))
+
+dat.ea <- dat %>% filter(RACE == "Non-Hispanic White, European ancestry") %>%  as.data.frame()
+dat.aa <- dat %>% filter(RACE == "Non-Hispanic Black, African ancestry") %>% as.data.frame()
+```
+
+# Tbl_summary setup
+```{r}
+tbl_summary_labels <-
+  list(
+      NAGE ~ "Age",
+      GENDER ~ "Sex",
+      RACE ~ "Race/ethnicity",
+      DEGREE ~ "Education",
+      AD12 ~ "Dementia classification",
+      drinkpweek ~ "Drinks per week",
+      logdrinkpweek ~ "Log-transformed drinks per week",
+      PGS4_DPW_GSCAN19 ~ "Whole-genome Polygenic Risk Score",
+      pgs.norm ~ "GSCAN19 Drink per week SNP hits Polygenic Risk Score",
+      #R11DRINK ~ "Ever drinks",
+      #R11DRINKD ~ "How many days per week when drinking",
+      #R11DRINKN ~ "Number of drinks per day when drinking",
+      APOE012 ~ paste0("APOE-", "\U03B5", "4 allele count"),
+      R11SMOKEV ~ "Ever smokes",
+      NMARST ~ "Marital status",
+      R11CESD ~ "CES-D depressive symptoms score",
+      R11CONDE ~ "Number of comorbidities",
+      R11SAYRET ~ "Retirement status"
+      )
+
+tbl_summary_types <-
+  list( 
+    #R11DRINKN ~ "continuous",
+    #R11DRINKD ~ "continuous",
+    R11CESD ~ "continuous",
+    R11CONDE ~ "continuous"
+
+  )
+```
+
+```{r}
+ancestryPCs <- c("AncestryPC_1_5A", "AncestryPC_1_5B", "AncestryPC_1_5C", "AncestryPC_1_5D", "AncestryPC_1_5E")
+demographics <- c("NAGE", "GENDER", "DEGREE", "APOE012")
+additional_covars <- c( "R11SMOKEV", "NMARST", "R11CESD", "R11CONDE", "R11SAYRET")
+```
+
+```{r}
+univar.variables <- c("drinkpweek", "logdrinkpweek", "AD12", "RACE", "PGS4_DPW_GSCAN19", "pgs.norm", demographics, additional_covars)
+dat.univar <-
+  dat %>%
+  dplyr::select(all_of(univar.variables))
+```
+
+# Univariate Table
+```{r}
+univar.table <- 
+  dat.univar %>%
+  tbl_summary(
+    label = tbl_summary_labels,
+    type = tbl_summary_types,
+    by = "RACE"
+    ) %>%
+  add_p()
+univar.table
+```
+
+
+```{r}
+#univar.table %>% as_flex_table %>% save_as_docx(path = here("results", "analytic", paste0(Sys.Date(), "_univar_by_race.docx")))
+
+#univar.table %>% as_flex_table %>% save_as_image(path = here("results", "analytic", paste0(Sys.Date(), "_univar_by_ancestry.png")), webshot = "webshot2")
+```
+
+```{r}
+tbl_summary_labels_bivar <-
+  list(
+      NAGE ~ "Age",
+      GENDER ~ "Sex",
+      DEGREE ~ "Education",
+      AD12 ~ "Dementia classification",
+      drinkpweek ~ "Drinks per week",
+      logdrinkpweek ~ "Log-transformed drinks per week",
+      PGS4_DPW_GSCAN19 ~ "Whole-genome Polygenic Risk Score",
+      pgs.norm ~ "GSCAN19 Drink per week SNP hits Polygenic Risk Score",
+      #R11DRINK ~ "Ever drinks",
+      #R11DRINKD ~ "How many days per week when drinking",
+      #R11DRINKN ~ "Number of drinks per day when drinking",
+      APOE012 ~ paste0("APOE-", "\U03B5", "4 allele count"),
+      R11SMOKEV ~ "Ever smokes",
+      NMARST ~ "Marital status",
+      R11CESD ~ "CES-D depressive symptoms score",
+      R11CONDE ~ "Number of comorbidities",
+      R11SAYRET ~ "Retirement status"
+      )
+```
+
+```{r}
+bivar.table.ea <- dat.univar %>%
+  filter(RACE == "Non-Hispanic White, European ancestry") %>%
+  dplyr::select(!RACE) %>%
+  tbl_summary(
+    by = "AD12",
+    label = tbl_summary_labels_bivar,
+    type = tbl_summary_types) %>%
+  add_p()
+#%>%
+  # Give APOE012 some extra hardware resources to resolve the APOE012 fisher exact test
+  #add_p(test.args = "APOE012" ~ list(workspace=2e9))
+bivar.table.ea
+
+#bivar.table.ea %>% as_flex_table %>% save_as_image(path = here("results", "analytic", paste0(Sys.Date(), "_bivar_ea.png")), webshot = "webshot2")
+```
+
+Manually re-run cells w/ low counts and simulated p-values
+```{r}
+fisher.test(dat.ea$NMARST, dat.ea$AD12, simulate.p.value = T)
+table(dat.ea$NMARST, dat.ea$AD12)
+fisher.test(dat.ea$R11SAYRET, dat.ea$AD12, simulate.p.value = T)
+table(dat.ea$R11SAYRET, dat.ea$AD12)
+```
+
+```{r}
+bivar.table.aa <- dat.univar %>%
+  filter(RACE == "Non-Hispanic Black, African ancestry") %>%
+  dplyr::select(!RACE) %>%
+  tbl_summary(
+    by = "AD12",
+    label = tbl_summary_labels_bivar,
+    type = tbl_summary_types) %>%
+  add_p()
+bivar.table.aa
+
+
+#bivar.table.aa %>% as_flex_table %>% save_as_docx(path = here("results", "analytic", paste0(Sys.Date(), "_bivar_aa.docx")))
+
+#bivar.table.aa %>% as_flex_table %>% save_as_image(path = here("results", "analytic", paste0(Sys.Date(), "_bivar_aa.png")), webshot = "webshot2")
+```
+
+```{r}
+fisher.test(dat.aa$NMARST, dat.aa$AD12, simulate.p.value = T)
+table(dat.aa$NMARST, dat.aa$AD12)
+fisher.test(dat.aa$R11SAYRET, dat.aa$AD12, simulate.p.value = T)
+table(dat.aa$R11SAYRET, dat.aa$AD12)
+```
+
+
+```{r}
+bivar.table.stacked <- tbl_stack(
+  tbls = list(bivar.table.ea, bivar.table.aa),
+  group_header = c("Non-Hispanic White, European ancestry", "Non-Hispanic Black, African ancestry")
+)
+
+#bivar.table.stacked %>%  as_flex_table %>% save_as_docx(path = here("results", "analytic", paste0(Sys.Date(), "_bivar_stacked.docx")))
+```
+
+```{r}
+bivar.table.merged <- tbl_merge(
+  tbls = list(bivar.table.ea, bivar.table.aa),
+  tab_spanner = c("Non-Hispanic White, European ancestry", "Non-Hispanic Black, African ancestry")
+)
+
+#bivar.table.merged %>% as_flex_table %>% save_as_docx(path = here("results", "analytic", paste0(Sys.Date(), "_bivar_merged.docx")))
+```
+
+## Inclusion/exclusion comparison - all 2012 participants with confirmed ancestry
+### European ancestry
+Get a dataset with dummy selection variable
+```{r}
+included.ea <-
+  ancestry.ea %>%
+  mutate(Included = ifelse(
+    # Indicator if included
+    HHIDPN %in% dat.ea$HHIDPN,
+    T,
+    F
+  )) %>%
+  mutate(Included = factor(Included, levels = c(F, T), labels = c("Excluded", "Included"))) %>%
+  dplyr::select(HHIDPN, "Included", all_of(univar.variables[!univar.variables == "RACE"])) # Exclude RACE
+```
+
+Included/excluded bivariate table
+```{r}
+tbl_summary_labels_included <- append(tbl_summary_labels_bivar, Included ~ "Included with complete data")
+
+inclusion.exclusion.ea <- 
+  included.ea %>%
+  dplyr::select(!HHIDPN) %>%
+  tbl_summary(
+    by = "Included",
+    label = tbl_summary_labels_included,
+    type = tbl_summary_types) %>%
+  add_n() %>%
+  add_p()
+
+inclusion.exclusion.ea
+
+#inclusion.exclusion.ea %>% as_flex_table %>% save_as_image(path = here("results", "analytic", paste0(Sys.Date(), "_incl_excl_ea.png")), webshot = "webshot2")
+```
+
+### African ancestry
+Get a dataset with dummy selection variable
+```{r}
+included.aa <-
+  ancestry.aa %>%
+  mutate(Included = ifelse(
+    HHIDPN %in% dat.aa$HHIDPN, # Indicator if included
+    T,
+    F
+  )) %>%
+  mutate(Included = factor(Included, levels = c(F, T), labels = c("Excluded", "Included"))) %>%
+  dplyr::select(HHIDPN, "Included", all_of(univar.variables[!univar.variables == "RACE"])) # Exclude RACE
+```
+
+Included/excluded bivariate table
+```{r}
+inclusion.exclusion.aa <- 
+  included.aa %>%
+  dplyr::select(!HHIDPN) %>%
+  tbl_summary(
+    by = "Included",
+    label = tbl_summary_labels_included,
+    type = tbl_summary_types) %>%
+  add_n() %>%
+  add_p()
+
+inclusion.exclusion.aa
+
+#inclusion.exclusion.aa %>% as_flex_table %>% save_as_image(path = here("results", "analytic", paste0(Sys.Date(), "_incl_excl_aa.png")), webshot = "webshot2")
+```
+
+```{r}
+inex.table.merged <- tbl_merge(
+  tbls = list(inclusion.exclusion.ea, inclusion.exclusion.aa),
+  tab_spanner = c("Non-Hispanic White, European ancestry", "Non-Hispanic Black, African ancestry")
+)
+
+#inex.table.merged %>% as_flex_table %>% save_as_docx(path = here("results", "analytic", paste0(Sys.Date(), "_inclusion_exclusion_comparison_by_race.docx")))
+```
+
+## Inclusion/exclusion comparison - all 2012 participants current drinkers with confirmed ancestry
+### European ancestry
+Get a dataset with dummy selection variable
+```{r}
+included.ea <-
+  ancestry.ea %>%
+  filter(!(drinkpweek == 0)) %>%
+  mutate(Included = ifelse(
+    # Indicator if included
+    HHIDPN %in% dat.ea$HHIDPN,
+    T,
+    F
+  )) %>%
+  mutate(Included = factor(Included, levels = c(F, T), labels = c("Excluded", "Included"))) %>%
+  dplyr::select(HHIDPN, "Included", all_of(univar.variables[!univar.variables == "RACE"])) # Exclude RACE
+```
+
+Included/excluded bivariate table
+```{r}
+tbl_summary_labels_included <- append(tbl_summary_labels_bivar, Included ~ "Included with complete data")
+
+inclusion.exclusion.ea <- 
+  included.ea %>%
+  dplyr::select(!HHIDPN) %>%
+  tbl_summary(
+    by = "Included",
+    label = tbl_summary_labels_included,
+    type = tbl_summary_types) %>%
+  add_n() %>%
+  add_p()
+
+inclusion.exclusion.ea
+```
+
+### African ancestry
+Get a dataset with dummy selection variable
+```{r}
+included.aa <-
+  ancestry.aa %>%
+  filter(!(drinkpweek == 0)) %>%
+  mutate(Included = ifelse(
+    HHIDPN %in% dat.aa$HHIDPN, # Indicator if included
+    T,
+    F
+  )) %>%
+  mutate(Included = factor(Included, levels = c(F, T), labels = c("Excluded", "Included"))) %>%
+  dplyr::select(HHIDPN, "Included", all_of(univar.variables[!univar.variables == "RACE"])) # Exclude RACE
+```
+
+Included/excluded bivariate table
+```{r}
+inclusion.exclusion.aa <- 
+  included.aa %>%
+  dplyr::select(!HHIDPN) %>%
+  tbl_summary(
+    by = "Included",
+    label = tbl_summary_labels_included,
+    type = tbl_summary_types) %>%
+  add_n() %>%
+  add_p()
+
+inclusion.exclusion.aa
+```
+
+```{r}
+inex.table.merged <- tbl_merge(
+  tbls = list(inclusion.exclusion.ea, inclusion.exclusion.aa),
+  tab_spanner = c("Non-Hispanic White, European ancestry", "Non-Hispanic Black, African ancestry")
+)
+
+#inex.table.merged %>% as_flex_table %>% save_as_docx(path = here("results", "analytic", paste0(Sys.Date(), "_inclusion_exclusion_comparison_by_race_current_drinkers.docx")))
+```
+
+## Exploratory analysis of PGSs
+
+```{r}
+ggplot(data = dat %>% group_by(RACE) %>% mutate(n = paste0(RACE, " (n = ", n(), ")")),
+       mapping = aes(x = PGS4_DPW_GSCAN19, y = pgs.norm, fill = RACE, color = RACE)) + 
+  theme_bw() +
+  theme(legend.position = "none") +
+  ggtitle("Current drinkers - Whole-genome vs. 71 SNP hit PGS correlation") +
+
+  facet_wrap("n") +
+  geom_point(alpha = 0.1) +
+  geom_smooth(method = "lm", formula = y ~ x) + 
+  stat_cor()
+```
+
+```{r}
+ggplot(data = bind_rows(ancestry.ea, ancestry.aa) %>% group_by(RACE) %>% mutate(n = paste0(RACE, " (n = ", n(), ")")),
+       mapping = aes(x = PGS4_DPW_GSCAN19, y = pgs.norm, fill = RACE, color = RACE)) + 
+  theme_bw() +
+  theme(legend.position = "none") +
+  ggtitle("2012 Wave - Whole-genome vs. 71 SNP hit PGS correlation") +
+  facet_wrap("n") +
+  geom_point(alpha = 0.1) +
+  geom_smooth(method = "lm", formula = y ~ x) + 
+  stat_cor()
+```
+
+```{r}
+ggplot(data = dat,
+       mapping = aes(x = drinkpweek, fill = RACE, color = RACE)) + 
+  theme_bw() +
+  theme(legend.position = "none") +
+  ggtitle("Drink per week distribution") +
+  facet_wrap("RACE") +
+  geom_histogram()
+```
+
+```{r}
+ggplot(data = dat,
+       mapping = aes(x = logdrinkpweek, fill = RACE, color = RACE)) + 
+  theme_bw() +
+  theme(legend.position = "none") +
+  ggtitle("Log-transformed drink per week distribution") +
+  facet_wrap("RACE") +
+  geom_histogram()
+```
+
+## Explore PGS performance among drinkers and non-drinkers
+

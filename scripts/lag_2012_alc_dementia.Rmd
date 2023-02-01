@@ -1,0 +1,826 @@
+---
+title: "cross-sectional_alc_dementia"
+author: "Kyle Abraham Campbell"
+date: "11/1/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(devtools)
+library(DiagrammeR)
+library(DiagrammeRsvg)  # for conversion to svg
+library(ivtools)
+library(ggridges)
+#devtools::install_github("davidsjoberg/ggsankey")
+library(ggsankey)
+library(gtsummary)
+library(haven)
+library(here)
+library(PRISMAstatement)
+library(rsvg)  # for saving svg
+library(tidymodels)
+library(tidyverse)
+library(viridis)
+
+
+#library(MendelianRandomization, AER)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Load data - SAS
+```{r, eval = FALSE}
+rand = read_sas(here("data", "randhrs1992_2018v1.sas7bdat"), n_max = 10)
+data = read_sas(here("data", "hrs_democoggen_wide20200910.sas7bdat"))
+```
+
+Load data - .Rda
+```{r, eval = F}
+load(here("data", "randhrs1992_2018v1.rda"))
+saveRDS(randhrs1992_2018v1, here("data", "randhrs1992_2018v1"))
+
+load(here("data", "hrs_democoggen_wide20200910.Rda"))
+saveRDS(hrs0910, here("data", "hrs_democoggen_wide2020910.Rda"))
+```
+
+Load data
+```{r, eval = F}
+rand <- readRDS(here("data", "randhrs1992_2018v1"))
+data <- readRDS(here("data", "hrs_democoggen_wide2020910.Rda"))
+```
+
+* ID
+  + HHID: Household ID
+  + PN: Person Number
+  + Wave N is 2012
+  + NIWWAVE indicator variable for interviewed during 2012 wave
+  + R11 is 2012
+
+* Outcome
+  + AD12: cognitive exam at 2012 wave
+  + COG_LAST_NS: Individual's last cognitive status, excluding those who had a stroke
+  
+* Exposure
+  + R11DRINK: Ever drinks
+  + R11DRINKD: When drinks, how many days/week
+  + R11DRINKN: When drinks, how much per day
+  + drinkpweek = R11DRINKD*R11DRINKN
+  + everdrank = I(RxxDRINK == 1)
+  
+* Instrumental Variables
+  + AA_PGS4_DPW_GSCAN19
+  + EA_PGS4_DPW_GSCAN19
+
+* Covariates
+  + NAGE: 2012 Age
+  + GENDER: sex
+  + RACE: Race/ethnicity
+  + DEGREE: Highest educational attainment
+  + APOE012: APOE-e4 status
+  + NMARST: 2012 Marital Status
+  + R11CESD: 2012 CES-D score
+  + R11CONDE: Number of comorbidities (0-8) for high blood pressure, diabetes,
+    cancer, lung disease, heart disease, stroke, psychiatric problems,
+    and arthritis, RAND Variable only
+  + R11SAYRET: whether retired, RAND variable only
+  + R11SMOKEV: smoked ever
+  
+* Ancestry-specific covariates
+  + AAPC1_5A: [-E], African ancestry genetic principal components (2006-2012)
+  + EAPC1_5A: [-E], European ancestry genetic principal components (2006-2012)
+  
+  + AA_PGS4_01AD2NA_IGAP19: African ancestry Alzheimer's w/o APOE, pT = 0.01 (IGAP 2019)
+  + AA_PGS4_01AD2WA_IGAP19: African ancestry Alzheimer's w/ APOE, pT = 1 (IGAP 2019)
+  
+
+* Does not apply to cross-sectional:
+  + Alcohol consumption at baseline
+  + BIRTHYR: Birth year to control for cohort effects (why is 0 coded?)
+
+* Other variables that may be of interest:
+  + AGE_LAST_NS: Individual's last age, excluding those who had a stroke
+  + NALIVE: vital status
+  + APOE2010_BIN: presence of any e4 allele
+  + R11BMI: Self-reported BMI
+  + SMOKE12: current, former, or never smoker
+  + R11SMOKEN: smokes now
+  + Smoking variables (recall Jonah's analysis about DNAm and smoking)
+  + WTCOHORT, "which gives the birth cohort used for calculating weights."
+
+Add HHIDPN for merging with RAND data
+```{r, eval = F}
+data <- 
+  data %>%
+  mutate(HHIDPN = paste0(HHID, PN)) %>% 
+  dplyr::select(HHIDPN, everything())
+```
+
+Reconstruct HHIDPN in RAND to avoid leading zero truncation and pull RAND variables of interest
+```{r, eval = F}
+rand.select <-
+  rand %>%
+  mutate(HHIDPN = paste0(HHID, PN)) %>%
+  dplyr::select(HHIDPN, R11CONDE, R11SAYRET)
+```
+
+```{r, eval = F}
+rm(rand)
+```
+
+Data preprocessing
+```{r, eval = F}
+dat.merged <-
+  left_join(
+    data,
+    rand.select
+  )
+#saveRDS(dat.merged, file = here("data", "cross-sectional_data_2021-12-02.rda"))
+```
+
+# Covariate selection and variable formatting 
+```{r}
+dat.merged <- readRDS(here("data", "cross-sectional_data_2021-12-02.rda"))
+```
+
+## Formatting and inclusion/exclusion
+```{r}
+#Format variables of interest
+source(here("scripts", "formatting_functions.r"))
+
+dat <-
+  dat.merged %>%
+  #filter(NIWWAVE == 1) %>% # limit to 2012 wave
+  mutate(AD12 = factor_cog_lw(AD12)) %>% # format cognition variable
+  mutate(drinkpweek = R11DRINKD * R11DRINKN) %>%
+  mutate(AD12.Dementia.outcome = fct_recode(# create dementia dummy variable
+    .f = AD12,
+    NULL = "CIND")) %>% 
+  mutate(AD12.CIND.outcome = fct_recode(# create CIND dummy variable
+    .f = AD12,
+    NULL = "Dementia")) %>% 
+  mutate(AD12.binary = case_when(
+    AD12 == "Dementia" ~ TRUE,
+    AD12 == "CIND" ~ TRUE,
+    AD12 == "Normal" ~ FALSE
+  )) %>%
+  mutate(GENDER = factor_gender(GENDER)) %>%
+  # Recode race not reported to missing
+  mutate(RACE = ifelse(
+    RACE == 0,
+    NA,
+    RACE
+  )) %>%
+  mutate(RACE = factor_race(RACE)) %>%
+  mutate(DEGREE = factor_degree(DEGREE)) %>%
+  mutate(DEGREE =
+    case_when(
+      DEGREE == "No degree" ~ "No degree",
+      DEGREE %in% c("GED", "High School Diploma", "Degree Unknown/Some college") ~ "High school/GED/Some college",
+      DEGREE %in% c("Two year college degree", "Four year college degree", "Master degree", "Professional Degree") ~ "Two year college degree or greater"
+    )
+  ) %>%
+  #mutate(DEGREE = ordered(DEGREE, levels = c("No degree", "High school/GED/Some college", "Two year college degree or greater"))) %>%
+  #mutate(R11DRINK = factor_ever_drink(R11DRINK)) %>%
+  mutate(R11DRINKD = as.numeric(R11DRINKD)) %>%
+  mutate(R11DRINKN = as.numeric(R11DRINKN)) %>%
+    #R3DRINK | R4DRINK %>% # | R5DRINK | R6DRINK | R7DRINK | R8DRINK | R9DRINK | R10DRINK | R11DRINK) %>%
+  mutate(APOE012 = factor_APOE_012(APOE012)) %>%
+  mutate(AncestryPC_1_5A = case_when( # Combining ancestry pcs by race for inclusion/exclusion purposes
+    RACE == "White/Caucasian" ~ eaPC1_5A,
+    RACE == "Black or African American" ~ AAPC1_5A
+  )) %>%
+  mutate(AncestryPC_1_5B = case_when(
+    RACE == "White/Caucasian" ~ eaPC1_5B,
+    RACE == "Black or African American" ~ AAPC1_5B
+  )) %>%
+  mutate(AncestryPC_1_5C = case_when(
+    RACE == "White/Caucasian" ~ eaPC1_5C,
+    RACE == "Black or African American" ~ AAPC1_5C
+  )) %>%
+  mutate(AncestryPC_1_5D = case_when(
+    RACE == "White/Caucasian" ~ eaPC1_5D,
+    RACE == "Black or African American" ~ AAPC1_5D
+  )) %>%
+  mutate(AncestryPC_1_5E = case_when(
+    RACE == "White/Caucasian" ~ eaPC1_5E,
+    RACE == "Black or African American" ~ AAPC1_5E
+  )) %>%
+  mutate(PGS4_DPW_GSCAN19 = case_when(
+    RACE == "White/Caucasian" ~ EA_PGS4_DPW_GSCAN19,
+    RACE == "Black or African American" ~ AA_PGS4_DPW_GSCAN19
+  )) %>%
+  mutate(R11SMOKEV = factor_ever_smoke(R11SMOKEV)) %>%
+  mutate(R10SMOKEV = factor_ever_smoke(R10SMOKEV)) %>%
+  # Recode marital status not reported to missing
+  mutate(NMARST = ifelse(
+    NMARST == 5,
+    NA,
+    NMARST
+  )) %>%
+  mutate(MMARST = ifelse(
+    MMARST == 5,
+    NA,
+    MMARST
+  )) %>%
+  mutate(NMARST = factor_marital_status(NMARST)) %>%
+  mutate(NMARST = factor_marital_status(MMARST)) %>%
+  # Appears Retirement status wasn't collected in R10
+  #mutate(R11SAYRET = factor_says_retired(R11SAYRET)) %>%
+  #mutate(R10SAYRET = factor_says_retired(R10SAYRET)) %>%
+  mutate(across(.cols = everything(), ~ zap_label(.x))) %>%   # Remove labels, only necessary if using .sas7bdat
+  mutate(across(.cols = everything(), ~ zap_formats(.x)))     # Remove formats, only necessary if using .sas7bdat
+```
+
+Create an everdrank prior to 2012 sum variable
+```{r}
+dat <-
+  dat %>%
+  rowwise() %>%
+  mutate(everdranksum = ifelse(
+    all(is.na(c(R3DRINK, R4DRINK, R5DRINK, R6DRINK, R7DRINK, R8DRINK, R9DRINK, R10DRINK))),
+    NA,
+    sum(R3DRINK, R4DRINK, R5DRINK, R6DRINK, R7DRINK, R8DRINK, R9DRINK, R10DRINK, na.rm = TRUE)))
+summary(dat$everdranksum)
+#dat %>% select(R3DRINK, R4DRINK, R5DRINK, R6DRINK, R7DRINK, R8DRINK, R9DRINK, R10DRINK, R11DRINK, everdranksum) %>% View
+#dat %>% select(R3DRINK, R4DRINK, R5DRINK, R6DRINK, R7DRINK, R8DRINK, R9DRINK, R10DRINK, R11DRINK, everdranksum) %>% filter(is.na(everdranksum)) %>% View
+```
+
+```{r}
+dat <-
+  dat %>%
+  mutate(everdrinker = case_when(
+    everdranksum > 0 ~ 1,
+    everdranksum == 0 ~ 0
+  ))
+summary(dat$everdrinker)
+```
+
+## Covariates for consideration
+Create a vector of variables for bivariate consideration and, separately, covariates. Order matters for gtsummary
+```{r}
+aa.pgs.covariates <- c("AAPC1_5A", "AAPC1_5B", "AAPC1_5C", "AAPC1_5D", "AAPC1_5E", "AA_PGS4_DPW_GSCAN19")
+ea.pgs.covariates <- c("eaPC1_5A", "eaPC1_5B", "eaPC1_5C", "eaPC1_5D", "eaPC1_5E", "EA_PGS4_DPW_GSCAN19")
+combined.pgs.covariates <- c("AncestryPC_1_5A", "AncestryPC_1_5B", "AncestryPC_1_5C", "AncestryPC_1_5D", "AncestryPC_1_5E", "PGS4_DPW_GSCAN19")
+
+univariates  = c("NAGE", "GENDER", "RACE", "DEGREE", "AD12", "drinkpweek",
+                "R11DRINK", "R11DRINKD", "R11DRINKN", "APOE012",
+                "R11SMOKEV", "NMARST", "R11CESD", "R11CONDE", "R11SAYRET",
+                "EA_PGS4_DPW_GSCAN19", "AD12.CIND.outcome", "AD12.Dementia.outcome",
+                "drinkpweek")
+bivariates  = c("NAGE", "GENDER", "RACE", "DEGREE", "drinkpweek",
+                "R11DRINK", "R11DRINKD", "R11DRINKN", "APOE012",
+                "R11SMOKEV", "NMARST", "R11CESD", "R11CONDE", "R11SAYRET")
+covariates  = c("NAGE", "GENDER", "RACE", "DEGREE", "drinkpweek",
+                "APOE012", "R11SMOKEV", "NMARST", "R11CESD", "R11CONDE", "R11SAYRET")
+```
+
+## Analytic sample inclusion/exclusion flow chart
+TODO: Need to filter out prevalent cases with prior to 60 onset
+```{r}
+wave.2012.count <- nrow(dat)
+
+genetic.subsample <- 
+  dat %>%
+  filter(GENETICS06 == T | GENETICS08 == T | GENETICS10 == T |  GENETICS12 == T)
+genetic.subsample.count <- nrow(genetic.subsample)
+
+# Need to filter out prevalent cases with prior to 60 onset
+#age65 <-
+#  genetic.subsample %>%
+#  filter(NAGE >= 65)
+#age65.count <- nrow(age65)
+
+ancestry.subsample <- 
+  genetic.subsample %>%
+  filter(RACE == "White/Caucasian" | RACE == "Black or African American")
+ancestry.count <- nrow(ancestry.subsample)
+
+pgs.score <-
+  genetic.subsample %>%
+  drop_na(AncestryPC_1_5A, AncestryPC_1_5B, AncestryPC_1_5C, AncestryPC_1_5D, AncestryPC_1_5E, PGS4_DPW_GSCAN19)
+pgs.score.count <- nrow(pgs.score)
+
+#pgs.score %>%
+#  dplyr::select(c("HHIDPN", "AncestryPC_1_5A", "AncestryPC_1_5B", "AncestryPC_1_5C", "AncestryPC_1_5D", "AncestryPC_1_5E", "PGS4_DPW_GSCAN19", "APOE012")) %>%
+#  summarise(across(.fns = ~ sum(is.na(.x))))
+
+outcome <-
+  pgs.score %>%
+  filter(!is.na(AD12))
+outcome.count <- nrow(outcome)
+
+exposure <-
+  outcome %>%
+  filter(!is.na(drinkpweek))
+exposure.count <- nrow(exposure)
+
+complete <-
+  exposure %>%
+  dplyr::select(HHIDPN, all_of(covariates), "AD12", "AD12.CIND.outcome", "AD12.Dementia.outcome") %>%
+  drop_na(any_of(c(covariates)))
+complete.count <- nrow(complete)
+```
+
+```{r}
+complete$AD12.CIND.outcome %>% summary
+complete$AD12.Dementia.outcome %>% summary
+complete$AD12 %>% summary
+```
+
+Inclusion/exclusion chart
+```{r}
+flow_exclusions(
+  incl_counts = c(
+    wave.2012.count,
+    genetic.subsample.count,
+    ancestry.count,
+    pgs.score.count,
+    outcome.count,
+    exposure.count,
+    complete.count),
+  total_label = "Health and Retirement Study - 2012 Wave",
+  incl_labels = c(
+    "Genetic subsample",
+    "African or European ancestry",
+    "With drinks per week polygenic score",
+    "With 2012 dementia assessment",
+    "With 2012 alcohol exposure information",
+    "Complete African or European ancestry observations"),
+  excl_labels = c(
+    "Missing genetic data",
+    "Neither African nor European ancestry",
+    "Without drinks per week polygenic score",
+    "Missing 2012 dementia assessment",
+    "Missing 2012 alcohol exposure information",
+    "Missing any 2012 covariate information"),
+  percent_of_total = TRUE
+)
+```
+
+Loop through all covariates for detailed inclusion/exclusion
+```{r}
+covariate_counts <- vector(mode = "numeric")
+dat_incl_excl <- exposure
+for (i in covariates) {
+  dat_incl_excl <-
+    dat_incl_excl %>%
+    filter(!is.na(!! rlang::sym(i)))
+  covariate_counts <- append(covariate_counts, nrow(dat_incl_excl))
+}
+```
+
+All covariates Inclusion/exclusion chart
+```{r}
+dot <- flow_exclusions_dot(
+  incl_counts = c(
+    wave.2012.count,
+    genetic.subsample.count,
+    ancestry.count,
+    pgs.score.count,
+    outcome.count,
+    exposure.count,
+    covariate_counts),
+  total_label = "Health and Retirement Study - 2012 Wave",
+  incl_labels = c(
+    "Genetic subsample",
+    "African or European ancestry",
+    "With drinks per week polygenic score",
+    "With 2012 dementia assessment",
+    "With 2012 alcohol exposure information",
+    covariates),
+  excl_labels = c(
+    "Missing genetic data",
+    "Neither African nor European ancestry",
+    "Without drinks per week polygenic score",
+    "Missing 2012 dementia assessment",
+    "Missing 2012 alcohol exposure information",
+    covariates),
+  percent_of_total = TRUE
+)
+```
+
+Save large inclusion/exclusion chart
+```{r}
+grViz_object = grViz(dot)
+
+grViz_object %>%
+    export_svg() %>%
+    charToRaw %>% 
+    rsvg_pdf(here("results", paste0("wave2012_detailed_excl_", Sys.Date(), ".pdf")))
+```
+
+Get a complete dataset
+```{r}
+complete.vars <- c("HHIDPN", "AD12", covariates)
+complete.vars.with.ancestry.pcs <- c("HHIDPN", "AD12", covariates, combined.pgs.covariates)
+
+complete.data <-
+  dat %>%
+  dplyr::select(all_of(complete.vars.with.ancestry.pcs)) %>%
+  filter(RACE == "White/Caucasian" | RACE == "Black or African American") %>%
+  drop_na()
+nrow(complete.data)
+```
+
+## Inclusion/exclusion comparison
+
+Get a dataset with dummy selection variable
+```{r}
+included.ids <- complete.data$HHIDPN
+included <-
+  dat %>%
+  filter(RACE == "White/Caucasian" | RACE == "Black or African American") %>%
+  mutate(Included = ifelse(
+    HHIDPN %in% included.ids,
+    T,
+    F
+  )) %>%
+  dplyr::select("Included", all_of(complete.vars))
+```
+
+```{r}
+tbl_summary_labels <-
+  list(
+      NAGE ~ "Age",
+      GENDER ~ "Sex",
+      RACE ~ "Race/ethnicity",
+      DEGREE ~ "Education",
+      AD12 ~ "Dementia classification",
+      drinkpweek ~ "Drinks per week when drinking",
+      #R11DRINK ~ "Ever drinks",
+      #R11DRINKD ~ "How many days per week when drinking",
+      #R11DRINKN ~ "Number of drinks per day when drinking",
+      APOE012 ~ paste0("APOE-", "\U03B5", "4 allele count"),
+      R11SMOKEV ~ "Ever smokes",
+      NMARST ~ "Marital status",
+      R11CESD ~ "CES-D depressive symptoms score",
+      R11CONDE ~ "Number of comorbidities",
+      R11SAYRET ~ "Retirement status"
+      )
+
+tbl_summary_types <-
+  list( 
+    #R11DRINKN ~ "continuous",
+    #R11DRINKD ~ "continuous",
+    R11CESD ~ "continuous",
+    R11CONDE ~ "continuous"
+
+  )
+```
+
+```{r}
+dat.univar <-
+  complete.data %>%
+  #filter(HHIDPN %in% complete$HHIDPN) %>%
+  dplyr::select(all_of(complete.vars)) %>%
+  dplyr::select(-HHIDPN)
+```
+
+# Univariate Table
+```{r}
+dat.univar %>%
+  tbl_summary(
+    label = tbl_summary_labels,
+    type = tbl_summary_types
+    )
+```
+
+# Bivariate Table
+```{r}
+dat.univar %>%
+  tbl_summary(
+    by = "AD12",
+    label = tbl_summary_labels,
+    type = tbl_summary_types) %>%
+  add_n() %>%
+  add_p()
+```
+
+Included/excluded bivariate table
+```{r}
+tbl_summary_labels_included <- append(tbl_summary_labels, Included ~ "Included with complete data")
+
+included %>%
+  dplyr::select(!HHIDPN) %>%
+  tbl_summary(
+    by = "Included",
+    label = tbl_summary_labels_included,
+    type = tbl_summary_types) %>%
+  add_n() %>%
+  add_p()
+```
+
+# Univariate Distributions
+Function to run univariate plots
+```{r}
+# Get names of numeric variables
+dat.univar.numeric <-
+  dat.univar %>%
+  dplyr::select(where(is.numeric)) %>%
+  names
+# Histogram function
+histogram.univar <- function(var) {
+  ggplot(data = dat,
+         mapping = aes_string(x = var)
+         ) + 
+    geom_histogram(na.rm = TRUE) +
+    ggtitle(var) +
+    theme_bw()
+}
+# plot
+map(dat.univar.numeric, ~ histogram.univar(.x))
+```
+
+```{r}
+ggplot(data = dat.merged.complete,
+       mapping = aes(
+         x = NAGE,
+         fill = AD12
+       )) +
+  geom_histogram(alpha = 0.7) +
+  facet_grid(rows = vars(AD12), cols = vars(R11DRINK)) +
+  ggtitle("Ever drinker status accelerates dementia onset?")
+```
+
+
+```{r}
+ggplot(data = dat.merged.complete,
+       mapping = aes(
+         x = NAGE,
+         fill = AD12
+       )) +
+  geom_density(alpha = 0.7) +
+  facet_grid(rows = vars(AD12), cols = vars(R11DRINK)) +
+  ggtitle("Ever drinker status accelerates dementia onset?")
+```
+
+```{r}
+ggplot(data = dat.univar,
+       mapping = aes(
+         x = NAGE,
+         y = drinkpweek
+       )) +
+  geom_rug() +
+  geom_hex() +
+  facet_grid(cols = vars(AD12)) +
+  ggtitle("Drinks per week by dementia status")
+```
+
+```{r, eval = F}
+ggplot(data = dat.univar,
+       mapping = aes(
+         x = NAGE,
+         fill = AD12
+       )) +
+  geom_histogram(alpha = 0.7) +
+  facet_grid(rows = vars(AD12), cols = vars(drinkpweek.cut)) +
+  ggtitle("Drinking status accelerates dementia onset?")
+```
+
+
+```{r, eval = F}
+ggplot(data = dat.univar,
+       mapping = aes(
+         x = NAGE,
+         fill = AD12
+       )) +
+  geom_density(alpha = 0.7) +
+  facet_grid(rows = vars(AD12), cols = vars(drinkpweek.cut)) +
+  ggtitle("Drinking status accelerates dementia onset?")
+```
+
+# Unrestricted conventional models
+```{r}
+logit.dementia <-
+  glm(formula =
+          as.formula(
+            paste0(
+              "AD12.Dementia.outcome ~ ",
+              paste(covariates, collapse = " + ")
+              ),
+            ),
+      data = dat,
+      family = "binomial"
+  )
+summary(logit.dementia)
+
+t.dementia <- gtsummary::tbl_regression(logit.dementia, exponentiate = TRUE)
+t.dementia
+
+logit.dementia.tidy <- tidy(logit.dementia, conf.int = TRUE, exponentiate = TRUE)
+logit.dementia.tidy$model <- "Dementia"
+```
+
+```{r, results='hide'}
+logit.cind <-
+  glm(formula =
+          as.formula(
+            paste0(
+              "AD12.CIND.outcome ~ ",
+              paste(covariates, collapse = " + ")
+              ),
+            ),
+      data = dat,
+      family = "binomial"
+  )
+summary(logit.cind)
+
+t.cind <- tbl_regression(logit.cind, exponentiate = TRUE)
+t.cind
+
+logit.cind.tidy <- tidy(logit.cind, conf.int = TRUE, exponentiate = TRUE)
+logit.cind.tidy$model <- "CIND"
+```
+
+```{r}
+# merge tables 
+tbl_merge_ex1 <-
+  tbl_merge(
+    tbls = list(t.cind, t.dementia),
+    tab_spanner = c("**CIND**", "**Dementia**")
+  )
+tbl_merge_ex1
+```
+
+```{r}
+dat.forest <- rbind(logit.dementia.tidy, logit.cind.tidy)
+```
+
+```{r}
+forest <- ggplot(data=dat.forest,
+                 aes(
+                   x=term,
+                   y=estimate,
+                   ymin=conf.low,
+                   ymax=conf.high,
+                   color = model,
+                   fill = model)) +
+  geom_hline(yintercept = 1, linetype = 2) +
+  geom_pointrange(position=position_dodge(width = 1)) +
+  coord_cartesian(ylim = c(0, 2.5)) +
+  coord_flip() +
+  theme_bw()
+forest
+```
+
+
+```{r}
+forest <- ggplot(data=dat.forest %>% filter(term == "drinkpweek"),
+                 aes(
+                   x=term,
+                   y=estimate,
+                   ymin=conf.low,
+                   ymax=conf.high,
+                   color = model,
+                   fill = model)) +
+  geom_hline(yintercept = 1, linetype = 2) +
+  geom_pointrange(position=position_dodge(width = 1)) +
+  coord_cartesian(ylim = c(0, 2.5)) +
+  coord_flip() +
+  theme_bw()
+forest
+```
+
+
+# Unrestricted lag-model 
+```{r}
+# Pick exposure
+exposure <- "R10DRINK"
+
+# Time invariant covariates
+covariates.invariate <- c("GENDER", "RACE", "DEGREE", "APOE012")
+
+covariates.time.varying.hrs.base <- c("AGE", "MARST")
+covariates.time.varying.hrs <- paste0("M", covariates.time.varying.hrs.base)
+
+
+covariates.time.varying.rand.base <- c("DRINK", "SMOKEV", "CESD")#, "CONDE") #, "SAYRET")
+covariates.time.varying.rand <- paste0("R10", covariates.time.varying.rand.base)
+#AD12.lag.covariates <- covariates[covariates != "drinkpweek"]
+#AD12.lag.covariates <- c(AD12.lag.covariates, "R10DRINK")
+```
+
+```{r}
+run_logit_dementia <- function(outcome, exposure, covariates, ...) {
+  logit.dementia <-
+    glm(formula =
+          as.formula(paste0(
+            outcome, " ~ ",
+            paste(c(exposure, covariates), collapse = " + ")
+          ),),
+        data = dat,
+        family = "binomial")
+  return(tidy(logit.dementia, exponentiate = TRUE, conf.int = TRUE))
+}
+```
+
+```{r}
+dat.ea <- dat %>% filter(RACE == "White/Caucasian")
+
+run_logit_dementia(outcome = "AD12.Dementia.outcome",
+                   exposure = "R10DRINK",
+                   covariates = c(covariates.time.varying.hrs, covariates.time.varying.rand),
+                   data = dat.ea)
+```
+
+```{r}
+dat.aa <- dat %>% filter(RACE == "Black or African American")- 
+run_logit_dementia(outcome = "AD12.Dementia.outcome",
+                   exposure = "R10DRINK",
+                   covariates = c(covariates.time.varying.hrs, covariates.time.varying.rand),
+                   data = dat.aa)
+```
+
+
+```{r}
+run_logit_dementia(outcome = "AD12.CIND.outcome",
+                   exposure = "R10DRINK",
+                   covariates = c(covariates.time.varying.hrs, covariates.time.varying.rand),
+                   data = dat %>% filter(RACE == "White/Caucasian"))
+```
+
+```{r}
+run_logit_dementia(outcome = "AD12.CIND.outcome",
+                   exposure = "R10DRINK",
+                   covariates = c(covariates.time.varying.hrs, covariates.time.varying.rand),
+                   data = dat %>% filter(RACE == "Black or African American"))
+```
+
+```{r}
+summary(logit.dementia)
+
+t.dementia <- gtsummary::tbl_regression(logit.dementia, exponentiate = TRUE)
+t.dementia
+
+logit.dementia.tidy <- tidy(logit.dementia, conf.int = TRUE, exponentiate = TRUE)
+logit.dementia.tidy$model <- "Dementia"
+```
+
+```{r, results='hide'}
+logit.cind <-
+  glm(formula =
+          as.formula(
+            paste0(
+              "AD12.CIND.outcome ~ ",
+              paste(covariates, collapse = " + ")
+              ),
+            ),
+      data = dat,
+      family = "binomial"
+  )
+summary(logit.cind)
+
+t.cind <- tbl_regression(logit.cind, exponentiate = TRUE)
+t.cind
+
+logit.cind.tidy <- tidy(logit.cind, conf.int = TRUE, exponentiate = TRUE)
+logit.cind.tidy$model <- "CIND"
+```
+
+```{r}
+# merge tables 
+tbl_merge_ex1 <-
+  tbl_merge(
+    tbls = list(t.cind, t.dementia),
+    tab_spanner = c("**CIND**", "**Dementia**")
+  )
+tbl_merge_ex1
+```
+
+```{r}
+dat.forest <- rbind(logit.dementia.tidy, logit.cind.tidy)
+```
+
+```{r}
+forest <- ggplot(data=dat.forest,
+                 aes(
+                   x=term,
+                   y=estimate,
+                   ymin=conf.low,
+                   ymax=conf.high,
+                   color = model,
+                   fill = model)) +
+  geom_hline(yintercept = 1, linetype = 2) +
+  geom_pointrange(position=position_dodge(width = 1)) +
+  coord_cartesian(ylim = c(0, 2.5)) +
+  coord_flip() +
+  theme_bw()
+forest
+```
+
+
+```{r}
+forest <- ggplot(data=dat.forest %>% filter(term == "drinkpweek"),
+                 aes(
+                   x=term,
+                   y=estimate,
+                   ymin=conf.low,
+                   ymax=conf.high,
+                   color = model,
+                   fill = model)) +
+  geom_hline(yintercept = 1, linetype = 2) +
+  geom_pointrange(position=position_dodge(width = 1)) +
+  coord_cartesian(ylim = c(0, 2.5)) +
+  coord_flip() +
+  theme_bw()
+forest
+```

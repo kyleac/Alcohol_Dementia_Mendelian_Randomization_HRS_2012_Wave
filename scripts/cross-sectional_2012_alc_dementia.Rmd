@@ -85,8 +85,8 @@ data <- readRDS(here("data", "hrs_democoggen_wide2020910.Rda"))
   + R11SMOKEV: smoked ever
   
 * Ancestry-specific covariates
-  + AAPC1_5A: [-E], African ancestry genetic principal components (2006-2012)
-  + EAPC1_5A: [-E], European ancestry genetic principal components (2006-2012)
+  + AAPC1_5A: [A-E], African ancestry genetic principal components (2006-2012)
+  + EAPC1_5A: [A-E], European ancestry genetic principal components (2006-2012)
   
   + AA_PGS4_01AD2NA_IGAP19: African ancestry Alzheimer's w/o APOE, pT = 0.01 (IGAP 2019)
   + AA_PGS4_01AD2WA_IGAP19: African ancestry Alzheimer's w/ APOE, pT = 1 (IGAP 2019)
@@ -151,6 +151,7 @@ dat <-
   filter(NIWWAVE == 1) %>% # limit to 2012 wave
   mutate(AD12 = factor_cog_lw(AD12)) %>% # format cognition variable
   mutate(drinkpweek = R11DRINKD * R11DRINKN) %>%
+  mutate(logdrinkpweek = log1p(drinkpweek)) %>% # logtransform drinkpweek w/ 1p to account for 0s
   mutate(AD12.Dementia.outcome = fct_recode(# create dementia dummy variable
     .f = AD12,
     NULL = "CIND")) %>% 
@@ -217,39 +218,7 @@ dat <-
   mutate(across(.cols = everything(), ~ zap_formats(.x)))     # Remove formats, only necessary if using .sas7bdat
 ```
 
-Coding attempts to create an ever drank variable
-```{r, eval = F, include = F}
-dat <-
-  dat %>%
-  rowwise() %>%
-  mutate(everdranksum =
-          sum(R3DRINK, R4DRINK, R5DRINK, R6DRINK, R7DRINK, R8DRINK, R9DRINK, R10DRINK, R11DRINK, na.rm = TRUE)) %>%
-  mutate(everdrank = )
-```
-
-```{r, eval = F, include = F}
-test <- dat.merged %>%
-  rowwise() %>%
-  mutate(everdranksum =
-          sum(R3DRINK, R4DRINK, R5DRINK, R6DRINK, R7DRINK, R8DRINK, R9DRINK, R10DRINK, R11DRINK, na.rm = TRUE)) %>%
-  dplyr::select(everdranksum)
-summary(test$everdranksum)
-```
-
-
-```{r, eval = F, include = F}
-test <- dat.merged %>%
-  rowwise() %>%
-  mutate(allna =
-          is.na(R3DRINK, R4DRINK, R5DRINK, R6DRINK, R7DRINK, R8DRINK, R9DRINK, R10DRINK, R11DRINK))
-  dplyr::select(everdranksum)
-summary(test$everdranksum)
-
-is.na(dat$R3DRINK) %>% summary
-```
-
-
-Code chunk to create categorized exposure category when ready
+Code chunk to create categorized exposure category if desired
 ```{r, eval = F, include = F}
   mutate(drinkpweek.cut = factor(
     case_when(
@@ -266,15 +235,15 @@ aa.pgs.covariates <- c("AAPC1_5A", "AAPC1_5B", "AAPC1_5C", "AAPC1_5D", "AAPC1_5E
 ea.pgs.covariates <- c("eaPC1_5A", "eaPC1_5B", "eaPC1_5C", "eaPC1_5D", "eaPC1_5E", "EA_PGS4_DPW_GSCAN19")
 combined.pgs.covariates <- c("AncestryPC_1_5A", "AncestryPC_1_5B", "AncestryPC_1_5C", "AncestryPC_1_5D", "AncestryPC_1_5E", "PGS4_DPW_GSCAN19")
 
-univariates  = c("NAGE", "GENDER", "RACE", "DEGREE", "AD12", "drinkpweek",
+univariates = c("NAGE", "GENDER", "RACE", "DEGREE", "AD12", "drinkpweek",
                 "R11DRINK", "R11DRINKD", "R11DRINKN", "APOE012",
                 "R11SMOKEV", "NMARST", "R11CESD", "R11CONDE", "R11SAYRET",
                 "EA_PGS4_DPW_GSCAN19", "AD12.CIND.outcome", "AD12.Dementia.outcome",
                 "drinkpweek") #"drinkpweek.cut"
-bivariates  = c("NAGE", "GENDER", "RACE", "DEGREE", "drinkpweek",
+bivariates = c("NAGE", "GENDER", "RACE", "DEGREE", "drinkpweek", "PGS4_DPW_GSCAN19",
                 "R11DRINK", "R11DRINKD", "R11DRINKN", "APOE012",
                 "R11SMOKEV", "NMARST", "R11CESD", "R11CONDE", "R11SAYRET")
-covariates  = c("NAGE", "GENDER", "RACE", "DEGREE", "drinkpweek",
+covariates = c("NAGE", "GENDER", "RACE", "DEGREE", "drinkpweek", "logdrinkpweek", "PGS4_DPW_GSCAN19",
                 "APOE012", "R11SMOKEV", "NMARST", "R11CESD", "R11CONDE", "R11SAYRET")
 ```
 
@@ -284,14 +253,15 @@ wave.2012.count <- nrow(dat)
 
 genetic.subsample <- 
   dat %>%
-  filter(GENETICS06 == T | GENETICS08 == T | GENETICS10 == T |  GENETICS12 == T)
+  filter(GENETICS06 == T | GENETICS08 == T | GENETICS10 == T) #|  GENETICS12 == T)
 genetic.subsample.count <- nrow(genetic.subsample)
 
 #genetic.subsample %>% drop_na(APOE012) %>% nrow
 
 ancestry.subsample <- 
   genetic.subsample %>%
-  filter(RACE == "White/Caucasian" | RACE == "Black or African American")
+  filter(RACE == "White/Caucasian" | RACE == "Black or African American") %>%
+  drop_na(AncestryPC_1_5A, AncestryPC_1_5B, AncestryPC_1_5C, AncestryPC_1_5D, AncestryPC_1_5E)
 ancestry.count <- nrow(ancestry.subsample)
 
 pgs.score <-
@@ -328,7 +298,7 @@ complete$AD12 %>% summary
 
 Inclusion/exclusion chart
 ```{r}
-flow_exclusions(
+dot <- flow_exclusions_dot(
   incl_counts = c(
     wave.2012.count,
     genetic.subsample.count,
@@ -354,6 +324,12 @@ flow_exclusions(
     "Missing any 2012 covariate information"),
   percent_of_total = TRUE
 )
+```
+
+Save simpler inclusion/exclusion chart for presentation
+```{r}
+grViz_object = DiagrammeR::grViz(dot)
+#grViz_object %>% export_svg() %>% charToRaw %>% rsvg_pdf(here("results", paste0("wave2012_incl_excl_", Sys.Date(), ".pdf")))
 ```
 
 Loop through all covariates for detailed inclusion/exclusion
@@ -401,11 +377,7 @@ dot <- flow_exclusions_dot(
 Save large inclusion/exclusion chart
 ```{r}
 grViz_object = grViz(dot)
-
-grViz_object %>%
-    export_svg() %>%
-    charToRaw %>% 
-    rsvg_pdf(here("results", paste0("wave2012_detailed_excl_", Sys.Date(), ".pdf")))
+#grViz_object %>% export_svg() %>% charToRaw %>% rsvg_pdf(here("results", paste0("wave2012_detailed_excl_", Sys.Date(), ".pdf")))
 ```
 
 Get a complete dataset
@@ -420,6 +392,11 @@ complete.data <-
   drop_na()
 nrow(complete.data)
 ```
+
+```{r}
+#saveRDS(complete.data %>% pull(l), here("data", paste0(Sys.Date(), "_xs_poster_data.rda")))
+```
+
 
 ## Sankey plots to assess alcohol consumption status over time {.tabset}
 
@@ -715,7 +692,7 @@ included <-
   dplyr::select("Included", all_of(complete.vars))
 ```
 
-
+## Tbl_summary
 ```{r}
 tbl_summary_labels <-
   list(
@@ -724,7 +701,9 @@ tbl_summary_labels <-
       RACE ~ "Race/ethnicity",
       DEGREE ~ "Education",
       AD12 ~ "Dementia classification",
-      drinkpweek ~ "Drinks per week when drinking",
+      drinkpweek ~ "Drinks per week",
+      PGS4_DPW_GSCAN19 ~ "Polygenic Risk Score",
+      #logdrinkpweek ~ "Log-transformed drinks per week",
       #R11DRINK ~ "Ever drinks",
       #R11DRINKD ~ "How many days per week when drinking",
       #R11DRINKN ~ "Number of drinks per day when drinking",
@@ -765,13 +744,17 @@ dat.univar %>%
 
 # Bivariate Table
 ```{r}
-dat.univar %>%
+bivar.table <- dat.univar %>%
+  dplyr::select(!logdrinkpweek) %>%
   tbl_summary(
     by = "AD12",
     label = tbl_summary_labels,
     type = tbl_summary_types) %>%
   add_n() %>%
   add_p()
+bivar.table
+
+#bivar.table %>% as_flex_table %>% save_as_image(path = here("results", paste0(Sys.Date(), "_bivar.png")))
 ```
 
 Included/excluded bivariate table
@@ -820,7 +803,6 @@ ggplot(data = dat.merged.complete,
   ggtitle("Ever drinker status accelerates dementia onset?")
 ```
 
-
 ```{r}
 ggplot(data = dat.merged.complete,
        mapping = aes(
@@ -867,13 +849,21 @@ ggplot(data = dat.univar,
   ggtitle("Drinking status accelerates dementia onset?")
 ```
 
+# Logit cross-sectional
+
+## Set model covariates
+```{r}
+model.covariates <- covariates[!(covariates %in% c("logdrinkpweek", "PGS4_DPW_GSCAN19"))]
+```
+
+
 ```{r}
 logit.dementia <-
   glm(formula =
           as.formula(
             paste0(
               "AD12.Dementia.outcome ~ ",
-              paste(covariates, collapse = " + ")
+              paste(model.covariates, collapse = " + ")
               ),
             ),
       data = dat,
@@ -894,7 +884,7 @@ logit.cind <-
           as.formula(
             paste0(
               "AD12.CIND.outcome ~ ",
-              paste(covariates, collapse = " + ")
+              paste(model.covariates, collapse = " + ")
               ),
             ),
       data = dat,
@@ -964,6 +954,7 @@ forest
 * ivtools R package publication: https://www.degruyter.com/document/doi/10.1515/em-2018-0024/html
   + ivtools provides this functionality
 
+European ancestry dataset
 ```{r}
 dat.complete <- dat %>%
   filter(HHIDPN %in% complete$HHIDPN)
@@ -985,6 +976,55 @@ dat.ea$drinkpweek.cut <- relevel(dat.ea$drinkpweek.cut, ref = "Never drinker")
 nrow(dat.ea)
 summary(dat.ea$AD12.CIND.outcome)
 ```
+
+Exploring associations between outcome, exposure, and genetic instrument
+```{r}
+dat.ea %>%
+  dplyr::select(all_of(c(complete.vars, "drinkpweek.cut", "EA_PGS4_DPW_GSCAN19"))) %>%
+  dplyr::select(-HHIDPN) %>%
+  tbl_summary(
+    by = "drinkpweek.cut",
+    label = tbl_summary_labels,
+    type = tbl_summary_types) %>%
+  add_n() %>%
+  add_p()
+```
+
+Exploring associations between outcome, exposure, and genetic instrument
+Possible solution to error: https://stackoverflow.com/questions/61360954/error-in-add-p-for-variable-x-and-test-fisher-test-p-value-omitted
+```{r}
+dat.ea %>%
+  dplyr::select(all_of(c(complete.vars, "drinkpweek.cut", "EA_PGS4_DPW_GSCAN19"))) %>%
+  dplyr::select(-HHIDPN) %>%
+  tbl_summary(
+    by = "AD12",
+    label = tbl_summary_labels,
+    type = tbl_summary_types) %>%
+  add_n() %>%
+  add_p(simulate.p.value = T)
+``` 
+
+African ancestry dataset
+```{r}
+dat.complete <- dat %>%
+  filter(HHIDPN %in% complete$HHIDPN)
+dat.aa.only <- 
+  dat.complete %>%
+  filter(RACE == "Black or African American")
+dat.aa <-
+  dat.aa.only %>%
+  mutate(drinkpweek.cut = factor(
+    case_when(
+      drinkpweek == 0 ~ "Never drinker",
+      drinkpweek <= median(dat.aa.only$drinkpweek[dat.aa.only$drinkpweek!=0]) ~ "Low",
+      drinkpweek > median(dat.aa.only$drinkpweek[dat.aa.only$drinkpweek!=0]) ~ "High"
+  ))) %>%
+  drop_na(any_of(c(covariates, "aa_PGS4_DPW_GSCAN19", "AD12.CIND.outcome"))) %>% # WILL NEED TO CHANGE FOR AD12.DEMENTIA
+  as.data.frame()
+# Set Never drinker as reference level for drinkpweek cut
+dat.aa$drinkpweek.cut <- relevel(dat.aa$drinkpweek.cut, ref = "Never drinker")
+```
+
 ## Two-stage least squares
 ### CIND vs. normal
 TSLS - CIND
@@ -999,13 +1039,11 @@ fitX.LZ <- glm(formula=drinkpweek~EA_PGS4_DPW_GSCAN19, family="gaussian", data=d
 summary(fitX.LZ)
 ```
 
-
 ```{r}
 fitIV_ts <- ivglm(estmethod="ts", fitX.LZ=fitX.LZ, fitY.LX=fitY.LX, data=dat.ea, ctrl = FALSE)
 summary(fitIV_ts)
 confint(fitIV_ts)
 ```
-
 
 ```{r}
 fitIV_ts <- ivglm(estmethod="ts", fitX.LZ=fitX.LZ, fitY.LX=fitY.LX, data=dat.ea, ctrl = TRUE)
@@ -1020,19 +1058,16 @@ fitY.LX <- glm(formula=AD12.Dementia.outcome~drinkpweek, family="binomial", data
 summary(fitY.LX)
 ```
 
-
 ```{r}
 fitX.LZ <- glm(formula=drinkpweek~EA_PGS4_DPW_GSCAN19, family="gaussian", data=dat.ea)
 summary(fitX.LZ)
 ```
-
 
 ```{r}
 fitIV_ts <- ivglm(estmethod="ts", fitX.LZ=fitX.LZ, fitY.LX=fitY.LX, data=dat.ea, ctrl = FALSE)
 summary(fitIV_ts)
 confint(fitIV_ts)
 ```
-
 
 ```{r}
 fitIV_ts <- ivglm(estmethod="ts", fitX.LZ=fitX.LZ, fitY.LX=fitY.LX, data=dat.ea, ctrl = TRUE)
@@ -1041,10 +1076,29 @@ confint(fitIV_ts)
 ```
 
 ## G-estimation
-### CIND vs. Normal 
+
+Custom function to summarize ivglm output
+```{r}
+# Function accepts a fitted ivglm model and outputs tidy-formatted summary tibble with exponentiated effect estimate and 95% CIs
+tidy_ivglm_summary <- function(mod) {
+  summary <- summary(mod)
+  tibble(
+    term = attr(summary$coefficients, "dimnames")[[1]],
+    estimate = round(exp(summary$coefficients[1]), 2),
+    std.error = round(summary$coefficients[2], 2),
+    statistic = round(summary$coefficients[3], 2),
+    p.value = round(summary$coefficients[4], 2),
+    conf.low = round(exp(confint(mod)[[1]]), 2),
+    conf.high = round(exp(confint(mod)[[2]]), 2)
+  )
+}
+```
+
+### CIND vs. Normal, EA 
 Provides unbiased OR estimates
 ```{r}
 nrow(dat.ea)
+summary(dat.ea$AD12.CIND.outcome)
 ```
 
 
@@ -1062,11 +1116,12 @@ fitIV_g  <- ivglm(estmethod = "g", X = "drinkpweek", fitZ.L = fitZ.L, fitY.LZX =
                   data = dat.ea, link = "logit")
 summary(fitIV_g)
 
-#g.cind.tidy <- tidy(fitIV_g, conf.int = TRUE, exponentiate = TRUE)
-#g.cind.tidy$model <- "g-estimation, CIND"
+g.cind.ea.tidy <- tidy_ivglm_summary(fitIV_g)
+g.cind.ea.tidy$outcome <- "CIND"
+g.cind.ea.tidy$sample <- "European ancestry"
 ```
 
-### Dementia vs. Normal
+### Dementia vs. Normal, EA
 
 ```{r}
 dat.ea.g.dementia <-
@@ -1075,13 +1130,14 @@ dat.ea.g.dementia <-
   as.data.frame()
 nrow(dat.ea.g.dementia)
 ```
+
 ```{r}
 summary(dat.ea.g.dementia$AD12.Dementia.outcome)
 ```
 
 
 ```{r}
-fitZ.L   <- glm(formula = EA_PGS4_DPW_GSCAN19 ~ 1,
+fitZ.L <- glm(formula = EA_PGS4_DPW_GSCAN19 ~ 1,
               family = "gaussian", data = dat.ea.g.dementia)
 summary(fitZ.L)
 
@@ -1091,6 +1147,114 @@ summary(fitY.LZX)
 
 fitIV_g  <- ivglm(estmethod = "g", X = "drinkpweek", fitZ.L = fitZ.L, fitY.LZX = fitY.LZX,
                   data = dat.ea.g.dementia, link = "logit")
+
+g.dem.ea.tidy <- tidy_ivglm_summary(fitIV_g)
+g.dem.ea.tidy$outcome <- "Dementia"
+g.dem.ea.tidy$sample <- "European ancestry"
+```
+
+```{r, eval = F}
+fitZ.L <- glm(formula = EA_PGS4_DPW_GSCAN19 ~ AncestryPC_1_5A + AncestryPC_1_5B + AncestryPC_1_5C + AncestryPC_1_5D + AncestryPC_1_5E,
+              family = "gaussian", data = dat.ea.g.dementia)
+summary(fitZ.L)
+
+fitY.LZX <- glm(formula = AD12.Dementia.outcome ~ EA_PGS4_DPW_GSCAN19 + drinkpweek + AncestryPC_1_5A + AncestryPC_1_5B + AncestryPC_1_5C + AncestryPC_1_5D + AncestryPC_1_5E,
+                family = "binomial", data = dat.ea.g.dementia)
+summary(fitY.LZX)
+
+fitIV_g  <- ivglm(estmethod = "g", X = "drinkpweek", fitZ.L = fitZ.L, fitY.LZX = fitY.LZX,
+                  data = dat.ea.g.dementia, link = "logit")
+
+g.dem.ea.tidy <- tidy_ivglm_summary(fitIV_g)
+g.dem.ea.tidy$outcome <- "Dementia"
+g.dem.ea.tidy$sample <- "European ancestry"
+```
+
+### CIND vs. Normal, AA 
+Provides unbiased OR estimates
+```{r}
+nrow(dat.aa)
+summary(dat.aa$AD12.CIND.outcome)
+```
+
+
+```{r}
+fitZ.L   <- glm(formula = AA_PGS4_DPW_GSCAN19 ~ 1,
+              family = "gaussian", data = dat.aa)
+summary(fitZ.L)
+
+fitY.LZX <- glm(formula = AD12.CIND.outcome ~ AA_PGS4_DPW_GSCAN19 + drinkpweek,
+                family = "binomial", data = dat.aa)
+summary(fitY.LZX)
+
+
+fitIV_g  <- ivglm(estmethod = "g", X = "drinkpweek", fitZ.L = fitZ.L, fitY.LZX = fitY.LZX,
+                  data = dat.aa, link = "logit")
 summary(fitIV_g)
+
+g.cind.aa.tidy <- tidy_ivglm_summary(fitIV_g)
+g.cind.aa.tidy$outcome <- "CIND"
+g.cind.aa.tidy$sample <- "African ancestry"
+```
+
+### Dementia vs. Normal, AA
+
+```{r}
+dat.aa.g.dementia <-
+  dat.aa.only %>%
+  drop_na(any_of(c(covariates, "AA_PGS4_DPW_GSCAN19", "AD12.Dementia.outcome"))) %>%
+  as.data.frame()
+nrow(dat.aa.g.dementia)
+```
+
+```{r}
+summary(dat.aa.g.dementia$AD12.Dementia.outcome)
+```
+
+```{r}
+fitZ.L <- glm(formula = AA_PGS4_DPW_GSCAN19 ~ 1,
+              family = "gaussian", data = dat.aa.g.dementia)
+summary(fitZ.L)
+
+fitY.LZX <- glm(formula = AD12.Dementia.outcome ~ AA_PGS4_DPW_GSCAN19 + drinkpweek,
+                family = "binomial", data = dat.aa.g.dementia)
+summary(fitY.LZX)
+
+fitIV_g  <- ivglm(estmethod = "g", X = "drinkpweek", fitZ.L = fitZ.L, fitY.LZX = fitY.LZX,
+                  data = dat.aa.g.dementia, link = "logit")
+
+g.dem.aa.tidy <- tidy_ivglm_summary(fitIV_g)
+g.dem.aa.tidy$outcome <- "Dementia"
+g.dem.aa.tidy$sample <- "African ancestry"
+```
+
+### Graphing g-estimation odds ratio PGS MR results stratified by ancestry
+
+Collect model results into one tibble
+```{r}
+g.forest <- rbind(g.cind.ea.tidy, g.dem.ea.tidy, g.cind.aa.tidy, g.dem.aa.tidy)
+```
+
+Forest plot
+```{r}
+forest <- ggplot(data=g.forest,
+                 aes(
+                   x=stringr::str_wrap(sample, 10),
+                   y=estimate,
+                   ymin=conf.low,
+                   ymax=conf.high,
+                   shape = outcome,
+                   color = outcome)) +
+  xlab("") +
+  ylab("Odds Ratio Per 1 Drink Per Week Increase") +
+  labs(shape = "Outcome", color = "Outcome") +
+  geom_hline(yintercept = 1, linetype = 2) +
+  geom_pointrange(position=position_dodge(width = 1)) +
+  coord_cartesian(ylim = c(0, 2.5)) +
+  coord_flip() +
+  theme_bw() +
+  theme(text = element_text(size = 18))
+forest
+#ggsave(here("results", "xs_g_est_alcohol_pgs_by_ancestry.png"))
 ```
 
