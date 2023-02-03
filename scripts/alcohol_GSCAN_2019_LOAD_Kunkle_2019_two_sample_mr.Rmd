@@ -7,9 +7,12 @@ output: html_document
 
 ```{r setup, include=FALSE}
 library(devtools)
-library(knitr)
+library(DiagrammeR)
+library(DiagrammeRsvg)
+library(glue)
 library(gtsummary)
 library(here)
+library(knitr)
 library(parameters)
 library(readxl)
 library(tidymodels)
@@ -33,7 +36,7 @@ Helper function to output simple tables of TwoSampleMR package function results 
 quick_2smr_kable <- function(x) {
   return <-
     x %>%
-    select(!c(id.exposure, id.outcome)) %>%
+    select(!c(id.exposure, id.outcome, exposure, outcome)) %>%
     kable(digits = 2)
   return(return)
 }
@@ -45,12 +48,34 @@ quick_2smr_kable <- function(x) {
 
 From Supplemental Table 5 from Liu et al., 2019. Same Alcohol consumption IVs used in Rosoff et al., 2020. A chr17 SNP rsid is labelled missing. Look into recovering with SNP database
 ```{r full_GSCAN_Liu_2019_res}
+#TODO check if chr17 SNP can be identified with RSID
 gscan.dpw <- read_excel(here("data", "gscan_dpw_full.xlsx"))
 head(gscan.dpw)
 paste0(dim(gscan.dpw)[1], " significant SNPs for genetic instrument consideration")
+#write_tsv(gscan.dpw, file = here("data", "gscan_dpw_hits.tsv"))
 ```
 
-Phenotype variation explained (PVE) is a substitute for R^2 in summary GWAS data (h^2, heritability). Calculate F statistic from that, total F-stat based on mzfu's code. Should the F statistic be calculated in the context of the entire GWAS or in just the high SNPs? Or just the SNPs that will be in the model?
+Export a list of variants split by chromosome for input into bcftools to subset HRS imputed_geno .vcfs
+```{r}
+gscan.chr.pos <- gscan.dpw %>%
+  select(Chr, Position) %>%
+  #mutate(region = paste0(Chr, ":", Position)) %>%
+  group_by(Chr) %>%
+  group_split()
+chr <- map(gscan.chr.pos, ~ .x$Chr[1])
+names(gscan.chr.pos) <- chr
+
+gscan.chr.pos.df <- map2(.x = gscan.chr.pos,
+                         .y = chr,
+                         ~ .x %>%
+                           as.data.frame %>%
+                           write_tsv(file = here("data", "gscan_chr_hits", paste0("chr.", .y, ".gscan.dpw.chr.pos.tsv")),
+                                     col_names = FALSE))
+
+#write_csv(x = gscan.chr.pos, file = here("data", "gscan_dpw_chr_pos.csv"), col_names = FALSE)
+```
+
+Phenotype variation explained (PVE) is a substitute for R^2 in summary GWAS data (h^2, heritability). Calculate F statistic from that, total F-stat based on mzfu's code.
 https://stats.stackexchange.com/questions/56881/whats-the-relationship-between-r2-and-f-test
 Teslovich TM, Musunuru K, Smith AV, Edmondson AC, Stylianou IM, Koseki M, et al. Biological,
 clinical and population relevance of 95 loci for blood lipids. Nature. 2010;466:707–713.
@@ -67,9 +92,10 @@ gscan.dpw.formatted <-
     pval = pvalue,
     samplesize = "effective n"
   ) %>%
-  mutate(pve = (2*beta^2*eaf*(1-eaf))/(2*beta^2*eaf*(1-eaf)+se^2*2*n*eaf*(1-eaf))) %>%
+  mutate(pve = (2*beta^2*eaf*(1-eaf))/(2*beta*eaf*(1-eaf)+se^2*2*n*eaf*(1-eaf))) %>%
   mutate(fstat_snp = ((n-1-1)*pve)/1/(1-pve)^2) %>%
-  mutate(fstat = ((n-nrow(gscan.dpw)-1)*(sum(pve))/nrow(gscan.dpw)/(1-sum(pve))^2))
+  mutate(fstat = ((n-nrow(gscan.dpw)-1)*(sum(pve))/nrow(gscan.dpw)/(1-sum(pve))^2)) %>%
+  mutate(pval = ifelse(pval == "<2.2e-308", 2.2e-307, pval))
 
 names <- colnames(gscan.dpw.formatted)[1:12]
 #gscan.dpw.formatted %>% select(names, pve, fstat_snp, fstat) %>% View
@@ -89,6 +115,16 @@ ggplot(data = gscan.dpw.formatted, mapping = (aes( x = fstat_snp))) +
 Format data for 2SMR input and clump
 ```{r}
 dat.exp <- format_data(gscan.dpw.formatted)
+snps.in.eur <- ieugwasr::ld_reflookup(dat.exp$SNP, pop = "EUR")
+```
+
+There are two introns not included in the EUR reference (rs11739827; 5:166303321-167303321, .; 17:43159975-45273783) (bi-allelic SNPs with MAF > 0.01); the other 26 SNPs were excluded as correlated; There were 18 non-sentinel SNPs in GSCAN DPW results, but GSCAN GWAS used 1MB window while we use 10 here
+```{r}
+not.in.eur.ref <- gscan.dpw.formatted %>% filter(!(SNP %in% snps.in.eur)) #%>% View()
+not.in.eur.ref
+```
+
+```{r}
 # By default, clumps all index and secondary SNPs at a 10000kb resolution with r^2 > .001
 dat.exp.clump <- clump_data(dat.exp)
 ```
@@ -115,12 +151,143 @@ ggplot(data = instrument.info, mapping = (aes( x = fstat_snp))) +
 
 ```{r}
 alc_exp_dat <- dat.exp.clump
+independent.snps <- alc_exp_dat %>% pull(SNP) 
+#saveRDS(instrument.info %>% filter(SNP %in% independent.snps), here("data", "analytic", "liu_independent_instruments.rda"))
+instrument.info %>% filter(SNP %in% independent.snps) %>% pull(locus)
+instrument.info %>% filter(SNP %in% independent.snps) %>% pull(locus) %>% str_extract(pattern = "\\d*:\\d*")
 ```
 
 ```{r}
+# rs17177078 not included due to not being present in the outcome GWAS and no proxy SNP found?
 load_out_dat <- extract_outcome_data(snps = alc_exp_dat$SNP, outcomes = 'ieu-b-2')
 dat <- harmonise_data(alc_exp_dat, load_out_dat)
 ```
+
+```{r}
+#View(mr_method_list())
+```
+
+## Instrument Inclusion/exclusion
+
+Code to create the inclusion/exclusion flowchart 
+```{r}
+gscan.hits <- glue("Candidate Instruments - Drinks per week GWAS hits
+          n = {dim(gscan.dpw.formatted)[1]}")
+
+gscan.hits.clumped <- glue("Independent index candidate instruments, 10MB window, r^2 < 0.001
+          n = {dim(dat.exp.clump)[1]}")
+gscan.hits.clumped.excluded <- glue("Non-independent candidate instruments
+          n = {dim(gscan.dpw.formatted)[1] - dim(dat.exp.clump)[1] - dim(not.in.eur.ref)[1]}
+          Instruments not contained in the 1000 Genomes EUR linkage disequilibrium reference panel
+          n = {dim(not.in.eur.ref)[1]}")
+
+gscan.hits.clumped.harmonized <- glue("Harmonized exposure and outcome instruments
+          n = {dim(dat %>% filter(mr_keep) == T)[1]}")
+gscan.hits.clumped.harmonized.excluded <- glue("Exposure instrument or proxy not found in outcome data
+          n = {dim(alc_exp_dat)[1] - dim(load_out_dat)[1]}
+          Non-inferable palindromic instruments
+          n = {dim(load_out_dat)[1] - dim(dat %>% filter(mr_keep) == T)[1]}")
+```
+
+```{r}
+graph <- grViz("
+digraph cohort_flow_chart {
+node [fontname = Helvetica, fontsize = 12, shape = box, width = 4]
+
+gscan_hits[label = '@@1-1']
+
+clumped_blank[label = '', width = 0.01, height = 0.01]
+clumped_excluded[label = '@@2-2']
+clumped[label = '@@2-1']
+
+harmonized_blank[label = '', width = 0.01, height = 0.01]
+harmonized_excluded[label = '@@3-1']
+harmonized[label = '@@3-2']
+
+{ rank = same; clumped_blank clumped_excluded}
+{ rank = same; harmonized_blank harmonized_excluded}
+
+gscan_hits -> clumped_blank [ dir = none ];
+clumped_blank -> clumped_excluded [ minlen = 1 ];
+clumped_blank -> clumped;
+
+clumped -> harmonized_blank [ dir = none ];
+harmonized_blank -> harmonized_excluded [ minlen = 1 ];
+harmonized_blank -> harmonized;
+
+}
+
+[1]: gscan.hits
+[2]: c(gscan.hits.clumped, gscan.hits.clumped.excluded)
+[3]: c(gscan.hits.clumped.harmonized.excluded, gscan.hits.clumped.harmonized)
+")
+```
+
+```{r, eval = F}
+graph %>% export_svg() %>% charToRaw %>% rsvg_pdf(here("results", paste0("instrument_incl_excl_", Sys.Date(), ".pdf")))
+```
+
+
+### Inclusion exlcusion for complementary, empirical 1SMR HRS analysis
+
+
+```{r}
+gscan.hits <- glue("Candidate Instruments - Drinks per week GWAS hits
+          n = {dim(gscan.dpw.formatted)[1]}")
+
+gscan.hits.clumped <- glue("Independent index candidate instruments, 10MB window, r^2 < 0.001
+          n = {dim(dat.exp.clump)[1]}")
+gscan.hits.clumped.excluded <- glue("Non-independent candidate instruments
+          n = {dim(gscan.dpw.formatted)[1] - dim(dat.exp.clump)[1] - dim(not.in.eur.ref)[1]}
+          Instruments not contained in the 1000 Genomes EUR linkage disequilibrium reference panel
+          n = {dim(not.in.eur.ref)[1]}")
+
+gscan.hits.clumped.harmonized <- glue("Analytic exposure instruments
+          n = {dim(dat.exp.clump)[1] - 1}")
+gscan.hits.clumped.harmonized.excluded <- glue("Minor allele frequency < 2%
+          n = 1")
+```
+
+```{r}
+graph <- grViz("
+digraph cohort_flow_chart {
+node [fontname = Helvetica, fontsize = 12, shape = box, width = 4]
+
+gscan_hits[label = '@@1-1']
+
+clumped_blank[label = '', width = 0.01, height = 0.01]
+clumped_excluded[label = '@@2-2']
+clumped[label = '@@2-1']
+
+harmonized_blank[label = '', width = 0.01, height = 0.01]
+harmonized_excluded[label = '@@3-1']
+harmonized[label = '@@3-2']
+
+{ rank = same; clumped_blank clumped_excluded}
+{ rank = same; harmonized_blank harmonized_excluded}
+
+gscan_hits -> clumped_blank [ dir = none ];
+clumped_blank -> clumped_excluded [ minlen = 1 ];
+clumped_blank -> clumped;
+
+clumped -> harmonized_blank [ dir = none ];
+harmonized_blank -> harmonized_excluded [ minlen = 1 ];
+harmonized_blank -> harmonized;
+
+}
+
+[1]: gscan.hits
+[2]: c(gscan.hits.clumped, gscan.hits.clumped.excluded)
+[3]: c(gscan.hits.clumped.harmonized.excluded, gscan.hits.clumped.harmonized)
+")
+```
+
+```{r}
+graph %>% export_svg() %>% charToRaw %>% rsvg_pdf(here("results", paste0("instrument_incl_excl_HRS_1smr_", Sys.Date(), ".pdf")))
+```
+
+
+## Selecting and running 2SMR models
 
 Select which 2SMR models to run
 ```{r}
@@ -130,14 +297,16 @@ methods.list <-
            heterogeneity_test == T | 
            obj == "mr_raps"
            ) %>%
+  filter(!(name %in% c("Unweighted regression", "Maximum Likelihood"))) %>%
   pull(obj)
+  
 
 methods.hetero <-
   mr_method_list() %>%
   filter(heterogeneity_test == T) %>% # & 
            #(use_by_default == T | 
               #obj == "mr_ivw_mre")) %>% 
-  pull(obj)
+pull(obj)
 ```
 
 Run 2SMR models
@@ -153,7 +322,7 @@ res <- mr(dat, method_list = methods.list)
 #             phi = 1,
 #             alpha = 0.05,
 #             Qthresh = 0.05,
-#             over.dispersion = TRUE,
+#             over.dispersion = FALSE,
 #             loss.function = "huber"),
 #           method_list = c("mr_raps"))
 
@@ -196,6 +365,17 @@ p3 <- mr_leaveoneout_plot(res_loo)
 p3[[1]]
 ```
 
+Export genetic instruments for 1-sample MR and PGS analysis
+```{r, eval = F}
+# Pull SNPs
+snp.list <- res_loo %>% pull(SNP)
+# Drop the "All" entry
+snp.list <- snp.list[-length(snp.list)]
+# Export
+#saveRDS(snp.list, here("data", "analytic", "2smr_snp_hits_05_23_2022.rda"))
+```
+
+
 rs56030824 is an outlier here, too.
 ```{r}
 res_single <- mr_singlesnp(dat)
@@ -233,6 +413,7 @@ mrpresso.res <- tibble(
   nsnp = res.or$nsnp[1] - res.presso[[1]]$`MR-PRESSO results`$`Outlier Test` %>% filter(Pvalue < 0.05) %>% tally %>% as.numeric,
   pval = presso.main$`P-value`,
   or = exp(presso.main$`Causal Estimate`),
+  # TODO is this the correct 95% CI calculation; is that Sd SE or Sd?
   or_lci95 = (presso.main$`Causal Estimate` - 1.96*presso.main$Sd) %>% exp,
   or_uci95 = (presso.main$`Causal Estimate` + 1.96*presso.main$Sd) %>% exp
 )
@@ -274,7 +455,30 @@ res.or.liu2019.full <-
   rbind(mrpresso.res, aldh.res, outlier.res) %>%
   rename_with(str_to_title) %>%
   rename("Number of SNPs" = Nsnp , "p" = Pval , "OR" = Or, "Lower 95% CI" = Or_lci95, "Upper 95% CI" = Or_uci95) %>%
-  mutate(Outcome = "Alzheimer's Disease, Kunkle et al., 2019", Exposure = "Drinks Per Week, Liu et al., 2019")
+  mutate(Method = as.factor(Method)) %>%
+  mutate(Outcome = "Alzheimer's Disease, Kunkle et al., 2019", Exposure = "Drinks Per Week, Liu et al., 2019") %>%
+  filter(!Method %in% c("Unweighted regression", "outlier SNP only"))
+```
+
+Forest plot
+```{r}
+forest <- ggplot(data=res.or.liu2019.full,
+                 aes(
+                   x=stringr::str_wrap(Method, 20),
+                   y=OR,
+                   ymin=`Lower 95% CI`,
+                   ymax=`Upper 95% CI`,
+                   )) +
+  xlab("") +
+  ylab("Odds Ratio Per log(drinks/week)") +
+  geom_hline(yintercept = 1, linetype = 2) +
+  geom_pointrange(position=position_dodge(width = 1)) +
+  coord_cartesian(ylim = c(0, 2.5)) +
+  coord_flip() +
+  theme_bw() + 
+  theme(text = element_text(size = 18)) 
+forest
+#ggsave(here("results", "two_smr_alcohol_load.png"))
 ```
 
 ## GSCAN GWAS results for weekly alcohol consumption (excludes 23andMe)
@@ -469,7 +673,7 @@ res.or.liu2019.no23andme <-
 
 # {-}
 
-```{r}
+```{r, eval = F}
 write.csv(rbind(
   res.or.liu2019.full,
   res.or.liu2019.no23andme
