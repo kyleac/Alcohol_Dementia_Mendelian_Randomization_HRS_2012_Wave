@@ -1,0 +1,1917 @@
+---
+title: "Mendelian Randomization Modeling"
+author: "Kyle Abraham Campbell"
+date: "4/25/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(boot)
+library(formulaic)
+library(ivtools)
+library(knitr)
+library(gtsummary) 
+library(here)
+library(labelled)
+library(MendelianRandomization)
+library(parameters)
+library(readxl)
+library(skimr)
+library(tidymodels)
+library(tidyverse)
+
+source(here("scripts", "gscan_dpw_1smr_xs_model_functions.R"))
+```
+
+```{r setup2, eval=FALSE, include=FALSE}
+#install.packages("devtools", type = "win.binary")
+library(devtools)
+library(remotes)
+#remotes::install_github("qingyuanzhao/mr.raps")
+library(mr.raps)
+#devtools::install_github("WSpiller/RadialMR")
+library(RadialMR)
+#devtools::install_github("explodecomputer/tryx")
+library(tryx)
+#remotes::install_github("MRCIEU/TwoSampleMR")
+#library(TwoSampleMR)
+#install_github("tye27/mr.genius")
+library(mr.genius)
+
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+as.data.frame is ESSENTIAL for ivglm to accept these as valid data inputs
+```{r}
+#dat <- readRDS(here("data", "analytic", "2022-08-23.gscan.dpw.1smr.xs.rda")) %>% as_tibble(.name_repair = "universal") %>% mutate(DEGREE = factor(DEGREE))
+
+dat <- readRDS(here("data", "analytic", "2022-12-30.gscan.dpw.1smr.xs.rda"))
+
+dat <- dat %>%
+  mutate(log2drinkpweek = log2(1 + drinkpweek)) %>%
+  set_variable_labels(
+    NAGE = "Age",
+    GENDER = "Sex",
+    DEGREE = "Education",
+    AD12 = "Dementia classification",
+    drinkpweek = "Drinks per week",
+    log2drinkpweek = "Doubling in weekly alcohol consumption",
+    PGS4_DPW_GSCAN19 = "Whole-genome Polygenic Risk Score",
+    pgs.norm = "GSCAN19 Drink per week SNP hits Polygenic Risk Score",
+    #R11DRINK = "Ever drinks",
+    #R11DRINKD = "How many days per week when drinking",
+    #R11DRINKN = "Number of drinks per day when drinking",
+    APOE012 = paste0("APOE-", "\U03B5", "4 allele count"),
+    R11SMOKEV = "Ever smokes",
+    NMARST = "Marital status",
+    R11CESD = "CES-D depressive symptoms score",
+    R11CONDE = "Number of comorbidities",
+    R11SAYRET = "Retirement status"
+  )
+
+  
+
+hist(dat$log2drinkpweek)
+
+# 2012 wave
+# Previous freeze w/ 71 independent SNPs
+#dat <- readRDS(here("data", "analytic", "2022-12-11.gscan.dpw.1smr.xs.rda"))
+
+# Current drinkers in 2012 wave
+#dat <- readRDS(here("data", "analytic", "2022-12-09.current.consumption.gscan.dpw.1smr.xs.rda"))
+```
+
+Get SNP IDs
+```{r}
+variants <-
+  dat %>%
+  # This approach assumes the SNP name still includes :'s
+  #dplyr::select(matches(":\\D:\\D")) %>%
+  # This approach uses updated repaired names
+  #dplyr::select(matches("\\.\\D\\.\\D")) %>%
+  # This approach uses the updated rsID
+  dplyr::select(matches("^rs[0-9]+")) %>%
+  colnames()
+length(variants)
+variants <- variants[!variants %in% c("rs429358", "rs7412", "rs28929474")]
+#variants <- variants[!variants %in% c("rs429358", "rs7412")]
+#rs561222871 and rs74664784 provide very unstable effect estimates and only SNPs with  MAF < 1%
+length(variants)
+
+# < 2% MAF: rs28929474, rs74664784, rs144198753, rs561222871
+
+# rs28929474 seems to be the only one causing problems and that made it through the independent threshold despite low MAF; exclude
+```
+
+```{r}
+univariates = c("HHIDPN", "NAGE", "GENDER", "RACE", "DEGREE", "AD12", "drinkpweek", "logdrinkpweek", "log2drinkpweek",
+                "R11DRINK", "R11DRINKD", "R11DRINKN", "APOE012",
+                "R11SMOKEV", "NMARST", "R11CESD", "R11CONDE", "R11SAYRET",
+                "PGS4_DPW_GSCAN19", "pgs.norm", "AD12.CIND.outcome", "AD12.Dementia.outcome", "AD12.binary") 
+combined.pgs.covariates <- c("AncestryPC_1_5A", "AncestryPC_1_5B", "AncestryPC_1_5C", "AncestryPC_1_5D", "AncestryPC_1_5E")
+
+model.vars <- c(univariates, combined.pgs.covariates, variants) %>% unique()
+genetics <- c("PGS4_DPW_GSCAN19", "pgs.norm", variants)
+```
+
+The different kinds of models we build beyond naive and combined.pgs.covariates Ancestry-adjusted 5 PCs
+```{r}
+demographics <- c("NAGE", "GENDER", "DEGREE")
+additional_covars <- c( "R11SMOKEV", "NMARST", "R11CESD", "R11CONDE", "R11SAYRET")
+```
+
+```{r}
+dat %>% filter(R11DRINK == 1) %>% pull(NAGE) %>% mean()
+dat %>% filter(R11DRINK == 1) %>% pull(drinkpweek) %>% mean()
+dat %>% filter(R11DRINK == 1) %>% pull(drinkpweek) %>% sd()
+```
+
+```{r}
+dat <-
+  dat %>%
+  dplyr::select(all_of(model.vars)) %>%
+  mutate(AD12.binary = factor(AD12.binary))
+```
+
+Option to convert to long format with SNP as a single column
+```{r, eval = F, include = F}
+dat.long <-
+  dat %>%
+  pivot_longer(all_of(c(variants, "PGS4_DPW_GSCAN19", "pgs.norm")), names_to = "SNP", values_to = "Dosage")
+```
+
+BOOKMARK
+
+```{r}
+dat.ea <- dat %>% filter(RACE == "Non-Hispanic White, European ancestry") %>% as.data.frame()
+dat.aa <- dat %>% filter(RACE == "Non-Hispanic Black, African ancestry") %>% as.data.frame()
+```
+
+# MendelianRandomization R package for IV estimation and robust senstivity analyses of pleiotropy
+
+## Pleiotropy
+
+### Fit Instrument -> Exposure model in EA
+
+```{r}
+# Drop the PGS scores for the individual SNP analysis
+snps <- genetics[-seq(1,2)]
+```
+
+```{r, eval = F}
+# Fit the linear model across all instruments, adjusted for ancestry covars
+fit <-
+  map(
+    .x = snps,
+    .f = ~ lm_mod %>%
+      fit(formula(paste0("drinkpweek ~ ", .x, " + ", paste(c(additional_covars, demographics, combined.pgs.covariates), collapse = " + "))),
+          data = dat.ea)
+  )
+
+fit_res <- map2(fit, snps, ~ tidy(.x) %>% filter(term == .y))
+names(fit_res) <- snps
+fit_res_df <- bind_rows(fit_res, .id = "Instrument")
+
+fit_glance <- map(fit, ~ glance(.x))
+names(fit_glance) <- snps
+fit_glance_df <- bind_rows(fit_glance, .id = "Instrument") %>% rename("F.stat" = statistic, "F.p.value" = p.value)
+
+fit_all <- left_join(fit_res_df, fit_glance_df, by = "Instrument")
+
+bx <- fit_all$estimate
+bxse <- fit_all$std.error
+```
+
+### Fit Instrument -> Outcome CIND model in EA
+```{r, eval = F}
+fit <-
+  map(
+    .x = snps,
+    .f = ~ lr_mod %>%
+      fit(formula(paste0("AD12.CIND.outcome ~ ", .x, " + ", paste(c(additional_covars, demographics, combined.pgs.covariates), collapse = " + "))),
+          data = dat.ea)
+  )
+
+fit_res <- map2(fit, snps, ~ tidy(.x, conf.int = TRUE, exponentiate = FALSE) %>% filter(term == .y))
+names(fit_res) <- snps
+fit_res_df <- bind_rows(fit_res, .id = "Instrument")
+
+fit_glance <- map(fit, ~ glance(.x))
+names(fit_glance) <- snps
+fit_glance_df <- bind_rows(fit_glance, .id = "Instrument") #%>% rename("F.stat" = statistic, "F.p.value" = p.value)
+
+fit_all <- left_join(fit_res_df, fit_glance_df, by = "Instrument")
+
+res.cind.ea <- fit_all %>%
+  mutate(Ancestry = "European Ancestry")
+
+by <- fit_all$estimate
+byse <- fit_all$std.error
+
+MRInputObject <- 
+  mr_input(bx = bx,
+           bxse = bxse,
+           by = by,
+           byse = byse,
+           snps = snps)
+
+MRAllObject_all <- mr_allmethods(MRInputObject, method = "all")
+
+MRAllObject_all
+
+mr_plot(MRInputObject, error = TRUE, orientate = FALSE, line = "ivw")
+
+mr_plot(MRInputObject, error = TRUE, orientate = FALSE, line = "ivw", interactive = F)
+```
+
+```{r Naive models, eval = F}
+mr.cind.ea <- run_snp_mr_naive_model(exposure = "log2drinkpweek", outcome = "AD12.CIND.outcome", dat = dat.ea)
+mr.dem.ea <- run_snp_mr_naive_model(exposure = "log2drinkpweek", outcome = "AD12.Dementia.outcome", dat = dat.ea)
+mr.cind.aa <- run_snp_mr_naive_model(exposure = "log2drinkpweek", outcome = "AD12.CIND.outcome", dat = dat.aa)
+mr.dem.aa <- run_snp_mr_naive_model(exposure = "log2drinkpweek", outcome = "AD12.Dementia.outcome", dat = dat.aa)
+mr.binary.ea <- run_snp_mr_naive_model(exposure = "log2drinkpweek", outcome = "AD12.binary", dat = dat.ea)
+mr.binary.aa <- run_snp_mr_naive_model(exposure = "log2drinkpweek", outcome = "AD12.binary", dat = dat.aa)
+```
+
+```{r}
+naive.models <- readRDS(here("results", "analytic", "mendelianrandomization_package_models",  paste0("one_smr_pcs_2023-03-10.rda")))
+```
+
+```{r, eval = F}
+naive.models <- list(mr.cind.ea = mr.cind.ea, mr.dem.ea = mr.dem.ea,
+               mr.cind.aa = mr.cind.aa, mr.dem.aa = mr.dem.aa,
+               mr.binary.ea = mr.binary.ea, mr.binary.aa = mr.binary.aa)
+
+#saveRDS(naive.models, here("results", "analytic", "mendelianrandomization_package_models", paste0("one_smr_naive_", Sys.Date(), ".rda")))
+```
+
+```{r, eval = F Ancestry PCs models}
+mr.cind.ea <- run_snp_mr(exposure = "log2drinkpweek", outcome = "AD12.CIND.outcome", covariates = combined.pgs.covariates, dat = dat.ea)
+mr.dem.ea <- run_snp_mr(exposure = "log2drinkpweek", outcome = "AD12.Dementia.outcome", covariates = combined.pgs.covariates, dat = dat.ea)
+mr.cind.aa <- run_snp_mr(exposure = "log2drinkpweek", outcome = "AD12.CIND.outcome", covariates = combined.pgs.covariates, dat = dat.aa)
+mr.dem.aa <- run_snp_mr(exposure = "log2drinkpweek", outcome = "AD12.Dementia.outcome", covariates = combined.pgs.covariates, dat = dat.aa)
+mr.binary.ea <- run_snp_mr(exposure = "log2drinkpweek", outcome = "AD12.binary", covariates = combined.pgs.covariates, dat = dat.ea)
+mr.binary.aa <- run_snp_mr(exposure = "log2drinkpweek", outcome = "AD12.binary", covariates = combined.pgs.covariates, dat = dat.aa)
+```
+
+```{r}
+ancestry.models <- readRDS(here("results", "analytic", "mendelianrandomization_package_models",  paste0("one_smr_pcs_2023-03-10.rda")))
+```
+
+```{r, eval = F}
+ancestry.models <- list(mr.cind.ea = mr.cind.ea, mr.dem.ea = mr.dem.ea,
+               mr.cind.aa = mr.cind.aa, mr.dem.aa = mr.dem.aa,
+               mr.binary.ea = mr.binary.ea, mr.binary.aa = mr.binary.aa)
+
+saveRDS(ancestry.models, here("results", "analytic", "mendelianrandomization_package_models", paste0("one_smr_pcs_", Sys.Date(), ".rda")))
+```
+
+```{r, eval = F Add demographics to ancestry PCs model}
+mr.cind.ea <- run_snp_mr(exposure = "log2drinkpweek", outcome = "AD12.CIND.outcome", covariates = c(demographics, combined.pgs.covariates), dat = dat.ea)
+mr.dem.ea <- run_snp_mr(exposure = "log2drinkpweek", outcome = "AD12.Dementia.outcome", covariates = c(demographics, combined.pgs.covariates), dat = dat.ea)
+mr.cind.aa <- run_snp_mr(exposure = "log2drinkpweek", outcome = "AD12.CIND.outcome", covariates = c(demographics, combined.pgs.covariates), dat = dat.aa)
+mr.dem.aa <- run_snp_mr(exposure = "log2drinkpweek", outcome = "AD12.Dementia.outcome", covariates = c(demographics, combined.pgs.covariates), dat = dat.aa)
+mr.binary.ea <- run_snp_mr(exposure = "log2drinkpweek", outcome = "AD12.binary", covariates = c(demographics, combined.pgs.covariates), dat = dat.ea)
+mr.binary.aa <- run_snp_mr(exposure = "log2drinkpweek", outcome = "AD12.binary", covariates = c(demographics, combined.pgs.covariates), dat = dat.aa)
+```
+
+```{r}
+demographics.models <- readRDS(here("results", "analytic", "mendelianrandomization_package_models", paste0("one_smr_demo_2023-03-10.rda")))
+```
+
+```{r, eval = F}
+demographics.models <- list(mr.cind.ea = mr.cind.ea, mr.dem.ea = mr.dem.ea,
+               mr.cind.aa = mr.cind.aa, mr.dem.aa = mr.dem.aa,
+               mr.binary.ea = mr.binary.ea, mr.binary.aa = mr.binary.aa)
+saveRDS(demographics.models, here("results", "analytic", "mendelianrandomization_package_models", paste0("one_smr_demo_", Sys.Date(), ".rda")))
+```
+
+```{r, eval = F Add APOE012 to demographic model}
+mr.cind.ea <- run_snp_mr(exposure = "log2drinkpweek", outcome = "AD12.CIND.outcome", covariates = c(demographics, "APOE012", combined.pgs.covariates), dat = dat.ea)
+mr.dem.ea <- run_snp_mr(exposure = "log2drinkpweek", outcome = "AD12.Dementia.outcome", covariates = c(demographics, "APOE012", combined.pgs.covariates), dat = dat.ea)
+mr.cind.aa <- run_snp_mr(exposure = "log2drinkpweek", outcome = "AD12.CIND.outcome", covariates = c(demographics, "APOE012", combined.pgs.covariates), dat = dat.aa)
+mr.dem.aa <- run_snp_mr(exposure = "log2drinkpweek", outcome = "AD12.Dementia.outcome", covariates = c(demographics, "APOE012", combined.pgs.covariates), dat = dat.aa)
+mr.binary.ea <- run_snp_mr(exposure = "log2drinkpweek", outcome = "AD12.binary", covariates = c(demographics, "APOE012", combined.pgs.covariates), dat = dat.ea)
+mr.binary.aa <- run_snp_mr(exposure = "log2drinkpweek", outcome = "AD12.binary", covariates = c(demographics, "APOE012", combined.pgs.covariates), dat = dat.aa)
+```
+
+```{r}
+demographics.apoe.models <- readRDS(here("results", "analytic", "mendelianrandomization_package_models", paste0("one_smr_demographics_apoe_2023-03-10.rda")))
+```
+
+```{r, eval = F}
+demographics.apoe.models <- list(mr.cind.ea = mr.cind.ea, mr.dem.ea = mr.dem.ea,
+               mr.cind.aa = mr.cind.aa, mr.dem.aa = mr.dem.aa,
+               mr.binary.ea = mr.binary.ea, mr.binary.aa = mr.binary.aa)
+
+saveRDS(demographics.apoe.models, here("results", "analytic", "mendelianrandomization_package_models", paste0("one_smr_demographics_apoe_", Sys.Date(), ".rda")))
+```
+
+```{r, eval = F Full Model}
+mr.cind.ea <- run_snp_mr(exposure = "log2drinkpweek", outcome = "AD12.CIND.outcome", covariates = c(demographics, "APOE012", additional_covars, combined.pgs.covariates), dat = dat.ea)
+mr.dem.ea <- run_snp_mr(exposure = "log2drinkpweek", outcome = "AD12.Dementia.outcome", covariates = c(demographics, "APOE012", additional_covars, combined.pgs.covariates), dat = dat.ea)
+mr.cind.aa <- run_snp_mr(exposure = "log2drinkpweek", outcome = "AD12.CIND.outcome", covariates = c(demographics, "APOE012", additional_covars, combined.pgs.covariates), dat = dat.aa)
+mr.dem.aa <- run_snp_mr(exposure = "log2drinkpweek", outcome = "AD12.Dementia.outcome", covariates = c(demographics, "APOE012", additional_covars, combined.pgs.covariates), dat = dat.aa)
+mr.binary.ea <- run_snp_mr(exposure = "log2drinkpweek", outcome = "AD12.binary", covariates = c(demographics, "APOE012", additional_covars, combined.pgs.covariates), dat = dat.ea)
+mr.binary.aa <- run_snp_mr(exposure = "log2drinkpweek", outcome = "AD12.binary", covariates = c(demographics, "APOE012", additional_covars, combined.pgs.covariates), dat = dat.aa)
+```
+
+```{r}
+full.models <- readRDS(here("results", "analytic", "mendelianrandomization_package_models", paste0("one_smr_full_2023-08-08.rda")))
+```
+
+
+```{r, eval = F}
+full.models <- list(mr.cind.ea = mr.cind.ea, mr.dem.ea = mr.dem.ea,
+               mr.cind.aa = mr.cind.aa, mr.dem.aa = mr.dem.aa,
+               mr.binary.ea = mr.binary.ea, mr.binary.aa = mr.binary.aa)
+saveRDS(full.models, here("results", "analytic", "mendelianrandomization_package_models", paste0("one_smr_full_", Sys.Date(), ".rda")))
+```
+
+### Look at an individual set of models
+```{r}
+mr.res <- full.models
+```
+
+```{r}
+mr.res$mr.dem.ea$MRAllObject@Values
+mr.res$mr.cind.ea$MRAllObject@Values
+mr.res$mr.binary.ea$MRAllObject@Values
+
+mr.res$mr.dem.aa$MRAllObject@Values
+mr.res$mr.cind.aa$MRAllObject@Values
+mr.res$mr.binary.aa$MRAllObject@Values
+
+dat.ea$AD12.Dementia.outcome %>% is.na %>% summary
+dat.ea$AD12.CIND.outcome %>% is.na %>% summary
+dat.ea$AD12.binary %>% is.na %>% summary
+
+dat.aa$AD12.Dementia.outcome %>% is.na %>% summary
+dat.aa$AD12.CIND.outcome %>% is.na %>% summary
+dat.aa$AD12.binary %>% is.na %>% summary
+
+map(mr.res, ~ mr_plot(.x$MRAllObject))
+```
+
+```{r}
+y <- map(mr.res, ~ mr_plot(.x$MRAllObject))
+y$mr.cind.ea$data
+```
+
+
+#TODO: discussion
+rs1229984 was imputed, located in ADH1B gene
+Which way is the effect/ref allele for rs1229984 coded?? Need to research this; the literature nomenclature is confusing
+Initially, rs1229984 was coded with T as the reference allele and C as the effect, so T->C more alcohol, possibly more dementia
+https://pubmed.ncbi.nlm.nih.gov/35670037/ "Individuals with the ADH1B rs1229984 (TC) or rs1229984 (TT) genotypes are more likely to experience drinking discomfort, reducing the risk of alcohol use disorder" The T is the rarer allele that results in increased acetaldehyde concentration (which is physically unpleasant) which tends to reduce drinking
+
+Need to read this: "Role of ADH1B rs1229984 and ALDH2 rs671
+gene polymorphisms in the development of
+Alzheimer’s disease" http://dx.doi.org/10.4238/gmr.15048740
+
+And was is automatically flipped to orient harmful direction by software/PGS calculation? Looks like yes based on the association results, but will need to verify
+For EA and AA Dementia, SNP 54 (rs1229984) is the harmful outlier
+For AA CIND, it flips to protective
+```{r}
+mr.plots <- map(mr.res, ~ mr_plot(.x$MRInputObject, interactive = F, error = T, labels = T))
+```
+
+No significant IVW Q statistics
+```{r}
+map(mr.res, ~ mr_ivw(.x$MRInputObject))
+```
+
+No significant Egger regression results or MR-Egger Q statistics
+```{r}
+map(mr.res, ~ mr_egger(.x$MRInputObject))
+```
+
+```{r}
+funnel.list <- map(mr.res, ~ mr_funnel(.x$MRInputObject))
+```
+
+```{r}
+map(mr.res, ~ mr_forest(.x$MRInputObject))
+```
+
+snp_54, rs1229984 when left out greatly reduces OR 
+```{r}
+loo.list <- map(mr.res, ~ mr_loo(.x$MRInputObject))
+#mr_loo(mr.res$mr.cind.ea$MRInputObject)
+```
+
+Save loo plots
+```{r, eval = F}
+ggsave(here("results", "one_smr", "full_models_loo", paste0("ea_cind", Sys.Date(), ".png")), plot = loo.list[[1]] + ggtitle("European ancestry - Cognitive impairment - Leave one out"))
+ggsave(here("results", "one_smr", "full_models_loo", paste0("ea_dem", Sys.Date(), ".png")), plot = loo.list[[2]] + ggtitle("European ancestry - Dementia - Leave one out"))
+ggsave(here("results", "one_smr", "full_models_loo", paste0("aa_cind", Sys.Date(), ".png")), plot = loo.list[[3]] + ggtitle("African ancestry - Cognitive impairment - Leave one out"))
+ggsave(here("results", "one_smr", "full_models_loo", paste0("aa_dem", Sys.Date(), ".png")), plot = loo.list[[4]] + ggtitle("African ancestry - Dementia - Leave one out"))
+```
+
+
+```{r}
+mr_plot(mr.res$mr.cind.ea$MRAllObject, error = TRUE, orientate = TRUE, line = "ivw", interactive = T)
+```
+
+```{r}
+mr_plot(mr.res$mr.cind.ea$MRAllObject, error = T, orientate = TRUE, line = "MREgger")
+```
+
+## ML-based
+Not a big difference between IVW and ML-based approaches, and ML produces some failed model fits
+```{r}
+map(mr.res, ~ mr_maxlik(.x$MRInputObject))
+```
+
+```{r}
+map(mr.res, ~ mr_ivw(.x$MRInputObject))
+```
+
+# Analytic
+## Table of effect estimates
+```{r}
+naive.models$mr.cind.ea$MRAllObject
+```
+
+```{r}
+map(mr.res, ~ mr_allmethods(.x$MRInputObject))
+```
+
+```{r}
+map(mr.res, ~ .x$MRAllObject)
+```
+
+```{r, include = F, eval = F}
+temp <- map(mr.res, ~ as.data.frame(.x$MRAllObject@Values), .id = "id")
+map(temp, ~ exp(.x))
+temp2 <- map(temp, ~ as.data.frame(.x), .id = "id")
+```
+
+```{r}
+# Takes list of model results from models above as input
+format_MRAllObject <- function(models, name_Model) {
+  
+  # Exponentiate and formatting/labelling MRAllObject
+  onesmr.res <- map(
+    models,
+    ~ as.data.frame(.x$MRAllObject@Values) %>%
+      # Exponentiate coefficients
+      mutate(across(Estimate:` `, .fns = ~ exp(.x))) %>%
+      # Rename CI columns
+      rename("Lower 95% CI" = `95% CI `, "Upper 95% CI" = ` `) %>%
+      # Option to filter out the MR-Egger intercept
+      #filter(Method != "(intercept)") %>%
+      # Relabel the MR-Egger intercept
+      mutate(
+        Method = case_when(Method == "(intercept)" ~ "MR-Egger intercept",
+                           TRUE ~ Method)
+      ) %>%
+      # Relabel IVW
+      mutate(Method = ifelse(
+        Method == "IVW", "Inverse variance weighted", Method
+      ))
+  )
+  
+  # Collapse list of MRAllObject's and auto-code using grepl
+  return(
+    do.call(rbind, onesmr.res) %>%
+    rownames_to_column(var = "name") %>%
+  mutate(Ancestry = case_when(
+    grepl("ea", name) ~ "European ancestry",
+    grepl("aa", name) ~ "African ancestry"
+  )) %>%
+    mutate(
+      Outcome = case_when(
+        grepl("cind", name) ~ "Cognitive impairment",
+        grepl("dem", name) ~ "Dementia",
+        grepl("binary", name) ~ "Any impairment"
+      )
+    ) %>%
+    mutate(Model = name_Model) %>%
+    dplyr::select(-name)
+  )
+}
+#format_MRAllObject(models = naive.models, name_Model = "Unadjusted")
+```
+
+Create the table
+```{r}
+models.list <- list(
+  naive.models,
+  demographics.models,
+  demographics.apoe.models,
+  full.models
+)
+
+models.names.list <- list(
+  "Unadjusted",
+  "Demographics",
+  "Demographics and APOE",
+  "Fully adjusted"
+)
+
+res.all.x <- 
+  map2(.x = models.list, .y = models.names.list, ~ format_MRAllObject(models = .x, name_Model = .y))
+res.all <- do.call(rbind, res.all.x) %>%
+  filter(Model == "Fully adjusted") %>%
+  filter(Outcome != "Any impairment") %>%
+  dplyr::select(!c(Model, `Std Error`))
+```
+
+```{r}
+res.all
+```
+
+
+```{r}
+format_gt_table <- function(x) {
+  return(
+    x %>%
+      arrange(Method) %>%
+      mutate(across(where(is.double), round, 2)) %>%
+      gt::gt(groupname_col = c("Outcome"))
+      
+    #gt::cols_label(Outcome = md("**Outcome**"))
+  )
+}
+
+# Comes from running the res statements below
+# TODO: pull the sensitivity models for ivglm - whole genome PGS, instrument-qualified PGS, and rs1229984
+#saveRDS(res, here("data", "ivglm_pgs_res.rda"))
+res.ivglm <- readRDS(here("data", "ivglm_pgs_res.rda"))
+
+res.ivglm.formatted <- 
+  res.ivglm %>%
+  filter(model == "ts") %>%
+  dplyr::select(!c(model, std.error, term, statistic, covariates)) %>%
+  rename(
+    Method = variant,
+    Ancestry = ancestry,
+    Estimate = estimate,
+    Outcome = outcome,
+    "Lower 95% CI" = conf.low,
+    "Upper 95% CI" = conf.high,
+    `P-value` = p.value
+  ) %>%
+  mutate(
+      Outcome = case_when(
+        Outcome == "CIND" ~ "Cognitive impairment",
+        Outcome == "Dementia" ~ "Dementia",
+        Outcome == "binary" ~ "Any impairment"
+      )
+    ) %>%
+  mutate(Ancestry = case_when(
+    grepl("ea", Ancestry) ~ "European ancestry",
+    grepl("aa", Ancestry) ~ "African ancestry"
+  )) %>%
+  mutate(Method = case_when(
+    grepl("PGS4_DPW_GSCAN", Method) ~ "Whole genome polygenic score",
+    grepl("pgs.norm", Method) ~ "Instrument polygenic score",
+    grepl("rs1229984", Method) ~ "rs1229984 alone"
+  )) %>%
+  filter(Outcome %in% c("Dementia", "Cognitive impairment"))
+
+res.all.combined <- rbind(res.all, res.ivglm.formatted)
+
+res.all.combined %>%
+  filter(Ancestry == "European ancestry") %>%
+  dplyr::select(!Ancestry) %>%
+  format_gt_table() %>%
+  gt::tab_spanner(
+        label = "European ancestry",
+        columns = c(Estimate, `Lower 95% CI`, `Upper 95% CI`,  `P-value`)
+      )
+
+
+res.all.combined %>%
+  filter(Ancestry == "African ancestry") %>%
+  dplyr::select(!Ancestry) %>%
+  format_gt_table() %>%
+  gt::tab_spanner(
+        label = "African ancestry",
+        columns = c(Estimate, `Lower 95% CI`, `Upper 95% CI`,  `P-value`)
+      )
+
+
+```
+
+Code examples from other scripts for possible gt table formatting if want to stack/merge ancestry results
+```{r, eval = F, include = F}
+bivar.table.stacked <- tbl_stack(
+  tbls = list(bivar.table.ea, bivar.table.aa),
+  group_header = c("Non-Hispanic White, European ancestry", "Non-Hispanic Black, African ancestry")
+)
+
+bivar.table.merged <- tbl_merge(
+  tbls = list(bivar.table.ea, bivar.table.aa),
+  tab_spanner = c("Non-Hispanic White, European ancestry", "Non-Hispanic Black, African ancestry")
+)
+```
+
+## Forest plots of effect estimates
+
+```{r}
+lr.res <- rbind(lr.cind.ea, lr.dem.ea, lr.cind.aa, lr.dem.aa) %>%
+  mutate(Method = "Conventional logistic regression") %>%
+  filter(term == "log2drinkpweek") %>%
+  dplyr::select(-term, -statistic) %>%
+  rename(Estimate = estimate,
+         `Std Error` = std.error,
+         `Lower 95% CI` = conf.low,
+         `Upper 95% CI` = conf.high,
+         `P-value` = p.value)
+
+onesmr.individual.variants.formatted <- onesmr.individual.variants %>%
+  filter(model == "ts") %>%
+  filter(outcome != "binary") %>%
+  dplyr::select(-model, -term, -covariates, -statistic) %>%
+  rename(Method = variant,
+         Estimate = estimate,
+         `Std Error` = std.error,
+         `Lower 95% CI` = conf.low,
+         `Upper 95% CI` = conf.high,
+         `P-value` = p.value,
+         Ancestry = ancestry,
+         Outcome = outcome
+         ) %>%
+  mutate(Ancestry = case_when(
+    grepl("ea", Ancestry) ~ dat.ea$RACE[1],
+    grepl("aa", Ancestry) ~ dat.aa$RACE[1]
+  )) %>%
+  mutate(Method = case_when(
+    grepl("PGS4", Method) ~ "Whole Genome Score",
+    grepl("norm", Method) ~ "Alcohol GWAS Hits Score",
+    grepl("rs"  , Method) ~ "ALDH SNP only"
+  )) 
+
+onesmr.res.forest <- rbind(onesmr.res, lr.res, onesmr.individual.variants.formatted) %>%
+  drop_na() %>%
+  filter(Method != "Simple median")# %>%
+  #factor(Method, levels = c(""))
+```
+
+```{r}
+graph <- onesmr.res.forest %>%
+  filter(Method %in% c("Weighted median", "MR-Egger", "Inverse variance weighted", "Conventional logistic regression")) %>%
+                   mutate(Ancestry = factor(Ancestry, levels = c("Non-Hispanic White, European ancestry", "Non-Hispanic Black, African ancestry"), labels = c("European ancestry", "African ancestry"))) %>%
+  mutate(Outcome = factor(Outcome, levels = c("CIND", "Dementia"), labels = c("Cognitive impairment, no dementia", "Dementia")))
+  
+```
+
+
+```{r}
+forest <- ggplot(data=graph,
+                 aes(
+                   x=Method,
+                   y=Estimate,
+                   ymin=`Lower 95% CI`,
+                   ymax=`Upper 95% CI`,
+                   shape = Ancestry,
+                   color = Ancestry
+                 )
+                 ) +
+  xlab("") +
+  ylab("Odds Ratio for doubling in weekly alcohol consumption") +
+  labs(shape = "Ancestry", color = "Ancestry") +
+  geom_hline(yintercept = 1, linetype = 2, size = 1) +
+  geom_pointrange(position=position_dodge(width = 0.2), size = 0.6) +
+  coord_flip(ylim = c(0,2.5)) +
+  #coord_flip() +
+  theme_bw() +
+  theme(legend.position = "bottom") +
+  #theme(text = element_text(size = 18)) +
+  facet_wrap(vars(Outcome))
+ 
+forest
+```
+
+# Conventional logistic regression
+
+```{r}
+res.logit <- readRDS(here("results", "conventional_glm", paste0("full_output_table_2023-08-17.rda")))
+```
+
+```{r, eval = F}
+pipe_logistic_reg <- function(outcome, exposure, data, demographics, subject_matter_covars, additional_covars) {
+  
+  # Fit a naive model
+  lr.mod.naive <- glm(data = data, formula = as.formula(paste0(outcome, " ~ ", exposure)), family = "binomial")
+  
+  # Fit a demographic-adjusted model
+  lr.mod.demo <- glm(data = dat.ea, formula = as.formula(paste0(outcome, " ~ ", exposure, " + ", paste(demographics, collapse = " + "))), family = "binomial")
+  
+  # Fit a demographic-adjusted with subject matter covariates
+  lr.mod.demo.subject.matter <- glm(data = dat.ea, formula = as.formula(paste0(outcome, " ~ ", exposure, " + ", paste(c(demographics, subject_matter_covars), collapse = " + "))), family = "binomial")
+  
+  # Fit a fully adjusted model
+  covariates.full <- c(demographics, subject_matter_covars, additional_covars)
+  lr.mod.full <- glm(data = data, formula = as.formula(paste0(outcome, " ~ ", exposure, " + ", paste(covariates.full, collapse = " + "))), family = "binomial")
+
+  # Collate results with exponentiation and 95% confidence intervals
+  res.list <- list(
+    Unadjusted = tidy(lr.mod.naive, exponentiate = T, conf.int = T) %>% mutate(Model = "Unadjusted") %>% mutate(Outcome = outcome),
+    Demographics = tidy(lr.mod.demo, exponentiate = T, conf.int = T) %>% mutate(Model = "Demographics") %>% mutate(Outcome = outcome),
+    Subject = tidy(lr.mod.demo.subject.matter, exponentiate = T, conf.int = T) %>% mutate(Model = "Subject") %>% mutate(Outcome = outcome),
+    Fully = tidy(lr.mod.full, exponentiate = T, conf.int = T) %>% mutate(Model = "Fully") %>% mutate(Outcome = outcome)
+  )
+  
+  return(res.list)
+}
+
+outcome.list <- c("AD12.Dementia.outcome", "AD12.CIND.outcome", "AD12.binary")
+
+pip.logit.res.ea <- map(.x = outcome.list, ~ pipe_logistic_reg(
+  outcome = .x,
+  exposure =  "log2drinkpweek",
+  data = dat.ea,
+  demographics = demographics,
+  subject_matter_covar = "APOE012",
+  additional_covars = additional_covars
+  ))
+names(pip.logit.res.ea) <- outcome.list
+
+res.dem.ea <- do.call(rbind, pip.logit.res.ea$AD12.Dementia.outcome)
+res.cind.ea <- do.call(rbind, pip.logit.res.ea$AD12.CIND.outcome)
+res.binary.ea <- do.call(rbind, pip.logit.res.ea$AD12.binary)
+res.logit.ea <- rbind(res.dem.ea, res.cind.ea, res.binary.ea) %>% mutate(Ancestry = "European ancestry")
+
+
+pip.logit.res.aa <- map(.x = outcome.list, ~ pipe_logistic_reg(
+  outcome = .x,
+  exposure =  "log2drinkpweek",
+  data = dat.aa,
+  demographics = demographics,
+  subject_matter_covar = "APOE012",
+  additional_covars = additional_covars
+  ))
+names(pip.logit.res.aa) <- outcome.list
+
+res.dem.aa <- do.call(rbind, pip.logit.res.aa$AD12.Dementia.outcome)
+res.cind.aa <- do.call(rbind, pip.logit.res.aa$AD12.CIND.outcome)
+res.binary.aa <- do.call(rbind, pip.logit.res.aa$AD12.binary)
+res.logit.aa <- rbind(res.dem.aa, res.cind.aa, res.binary.aa) %>% mutate(Ancestry = "African ancestry")
+
+res.logit <- rbind(res.logit.ea, res.logit.aa)
+#saveRDS(res.logit, here("results", "conventional_glm", paste0("full_output_table_", Sys.Date(), ".rda")))
+```
+
+# 2023 allele score MendelianRandomization  package
+
+Attempt to re-run in the MR package to verify consistency between packages
+
+## PGS4_DPW_GSCAN_19
+
+```{r, eval = F, include = F}
+pgs4 <- run_snp_mr_pgs(exposure = "log2drinkpweek", outcome = "AD12.Dementia.outcome", covariates = c(demographics, "APOE012", additional_covars, combined.pgs.covariates), dat = dat.ea, snps = "PGS4_DPW_GSCAN19")
+
+# Stage 1 - regress exposure, X, on instrument Z
+stage1 <- lm(log2drinkpweek ~ PGS4_DPW_GSCAN19, data = dat.ea)
+
+# Stage 2 - regress Y on X_hat
+
+```
+
+## PGS.NORM
+
+## rs1229984
+
+## G-estimation and 2SLS for allele score testing
+
+# 2023 allele scores
+
+```{r}
+ivglm_model_iterate <- function(outcome,
+  exposure,
+  variant,
+  data,
+  ancestry,
+  ancestry_pcs,
+  demographics,
+  subject_matter_covar,
+  additional_covars) {
+  
+  # Fit a naive model, only adjusted for ancestry PCs
+  mod.naive <- ivglm_model_exp_num(variant = variant,
+                                   exposure = exposure,
+                                   outcome = outcome,
+                                   data = data,
+                                   ancestry = ancestry,
+                                   covariates = combined.pgs.covariates
+                                   )
+  # Fit a demographic-adjusted model
+  mod.demographics <- ivglm_model_exp_num(variant = variant,
+                                   exposure = exposure,
+                                   outcome = outcome,
+                                   data = data,
+                                   ancestry = ancestry,
+                                   covariates = c(combined.pgs.covariates, demographics)
+                                   )
+  # Fit a demographic-adjusted with subject matter covariates
+  mod.subject <- ivglm_model_exp_num(variant = variant,
+                                   exposure = exposure,
+                                   outcome = outcome,
+                                   data = data,
+                                   ancestry = ancestry,
+                                   covariates = c(combined.pgs.covariates, demographics, subject_matter_covar)
+                                   )
+   # Fit a fully adjusted model
+  mod.full <- ivglm_model_exp_num(variant = variant,
+                                   exposure = exposure,
+                                   outcome = outcome,
+                                   data = data,
+                                   ancestry = ancestry,
+                                   covariates = c(combined.pgs.covariates, demographics, subject_matter_covar, additional_covars)
+                                   )
+  # Collate results, already exponentiated w/ 95% CIs from ivglm_model_exp_num function
+  res.list <- list(
+    Unadjusted = mod.naive %>% mutate(Model = "Unadjusted") %>% mutate(Outcome = outcome) %>% mutate(Method = variant) %>% filter(model == "ts"),
+    Demographics = mod.demographics %>% mutate(Model = "Demographics") %>% mutate(Outcome = outcome) %>% mutate(Method = variant) %>% filter(model == "ts"),
+    Subject =  mod.subject %>% mutate(Model = "Subject") %>% mutate(Outcome = outcome) %>% mutate(Method = variant) %>% filter(model == "ts"),
+    Fully = mod.full %>% mutate(Model = "Fully") %>% mutate(Outcome = outcome) %>% mutate(Method = variant) %>% filter(model == "ts")
+  )
+  
+  return(res.list)
+}
+
+variants.select <- c("pgs.norm", "PGS4_DPW_GSCAN19", "rs1229984")
+
+outcome.list.loop <- c(rep(outcome.list[1], times = 3), rep(outcome.list[2], times = 3), rep(outcome.list[3], times = 3))
+variants.select.loop <- rep(variants.select, times=3)
+
+pip.ivglm.res.ea <- map2(.x = outcome.list.loop, .y = variants.select.loop, ~ ivglm_model_iterate(data = dat.ea, exposure = "log2drinkpweek", ancestry = "ea", variant = .y, outcome = .x, demographics = demographics, ancestry_pcs = combined.pgs.covariates, subject_matter_covar = "APOE012", additional_covars = additional_covars))
+```
+
+```{r}
+x <- pip.ivglm.res.ea
+x.1 <- unlist(x, recursive = F)
+x.2 <- do.call(rbind, x.1)
+res.ivglm.ea <- x.2 %>% mutate(Ancestry = "European ancestry")
+```
+
+```{r}
+pip.ivglm.res.aa <- map2(.x = outcome.list.loop, .y = variants.select.loop, ~ ivglm_model_iterate(data = dat.aa, exposure = "log2drinkpweek", ancestry = "aa", variant = .y, outcome = .x, demographics = demographics, ancestry_pcs = combined.pgs.covariates, subject_matter_covar = "APOE012", additional_covars = additional_covars))
+```
+
+## Ancestry covars only
+```{r}
+ivglm_model_exp_num(data = dat.ea, exposure = "log2drinkpweek", ancestry = "ea", variant = "pgs.norm", outcome = "AD12.Dementia.outcome", covariates = combined.pgs.covariates)
+ivglm_model_exp_num(data = dat.ea, exposure = "log2drinkpweek", ancestry = "ea", variant = "PGS4_DPW_GSCAN19", outcome = "AD12.Dementia.outcome", covariates = ancestry.covars)
+ivglm_model_exp_num(data = dat.aa, exposure = "log2drinkpweek", ancestry = "aa", variant = "pgs.norm", outcome = "AD12.Dementia.outcome", covariates = ancestry.covars)
+ivglm_model_exp_num(data = dat.aa, exposure = "log2drinkpweek", ancestry = "aa", variant = "PGS4_DPW_GSCAN19", outcome = "AD12.Dementia.outcome", covariates = ancestry.covars)
+```
+
+```{r}
+ivglm_model_exp_num(data = dat.ea, exposure = "log2drinkpweek", ancestry = "ea", variant = "pgs.norm", outcome = "AD12.CIND.outcome", covariates = ancestry.covars)
+ivglm_model_exp_num(data = dat.ea, exposure = "log2drinkpweek", ancestry = "ea", variant = "PGS4_DPW_GSCAN19", outcome = "AD12.CIND.outcome", covariates = ancestry.covars)
+ivglm_model_exp_num(data = dat.aa, exposure = "log2drinkpweek", ancestry = "aa", variant = "pgs.norm", outcome = "AD12.CIND.outcome", covariates = ancestry.covars)
+ivglm_model_exp_num(data = dat.aa, exposure = "log2drinkpweek", ancestry = "aa", variant = "PGS4_DPW_GSCAN19", outcome = "AD12.CIND.outcome", covariates = ancestry.covars)
+```
+
+```{r}
+res.binary.ea.pgs <- ivglm_model_exp_num(data = dat.ea, exposure = "log2drinkpweek", ancestry = "ea", variant = "pgs.norm", outcome = "AD12.binary", covariates = ancestry.covars)
+res.binary.ea.gscan <- ivglm_model_exp_num(data = dat.ea, exposure = "log2drinkpweek", ancestry = "ea", variant = "PGS4_DPW_GSCAN19", outcome = "AD12.binary", covariates = ancestry.covars)
+res.binary.aa.pgs <- ivglm_model_exp_num(data = dat.aa, exposure = "log2drinkpweek", ancestry = "aa", variant = "pgs.norm", outcome = "AD12.binary", covariates = ancestry.covars)
+res.binary.ea.gscan <- ivglm_model_exp_num(data = dat.aa, exposure = "log2drinkpweek", ancestry = "aa", variant = "PGS4_DPW_GSCAN19", outcome = "AD12.binary", covariates = ancestry.covars)
+```
+
+```{r}
+res <- rbind(res.dem.ea, res.dem.aa, res.cind.ea, res.cind.aa)
+
+res.binary <- rbind(res.binary.ea.pgs, res.binary.ea.gscan, res.binary.aa.pgs, res.binary.ea.gscan)
+res.binary$outcome <- "binary"
+```
+
+```{r}
+rbind(res.binary, res.dementia, res.cind)
+```
+
+```{r}
+forest <- ggplot(data=res,
+                 aes(
+                   x=variant,
+                   y=estimate,
+                   ymin=conf.low,
+                   ymax=conf.high,
+                   shape = ancestry,
+                   color = ancestry
+                 )
+                 ) +
+  xlab("") +
+  ylab("Odds Ratio for doubling in weekly alcohol consumption") +
+  labs(shape = "Outcome", color = "Outcome") +
+  geom_hline(yintercept = 1, linetype = 2) +
+  geom_pointrange(position=position_dodge(width = 1)) +
+  coord_flip(ylim = c(-4,4)) +
+  theme_bw() +
+  facet_wrap(vars(outcome, model)) +
+  theme(text = element_text(size = 18))
+forest
+```
+
+## Fully adjusted for potential confounders and APOE012 
+
+Dementia in AA models don't converge
+```{r}
+res.dementia.ea.pgs <- ivglm_model_exp_num(data = dat.ea, exposure = "log2drinkpweek", ancestry = "ea", variant = "pgs.norm", outcome = "AD12.Dementia.outcome", covariates = c(demographics, "APOE012", additional_covars, combined.pgs.covariates))
+res.dementia.ea.gscan <- ivglm_model_exp_num(data = dat.ea, exposure = "log2drinkpweek", ancestry = "ea", variant = "PGS4_DPW_GSCAN19", outcome = "AD12.Dementia.outcome", covariates = c(demographics, "APOE012", additional_covars, combined.pgs.covariates))
+res.dementia.ea.rs1229984 <- ivglm_model_exp_num(data = dat.ea, exposure = "log2drinkpweek", ancestry = "ea", variant = "rs1229984", outcome = "AD12.Dementia.outcome", covariates = c(demographics, "APOE012", additional_covars, combined.pgs.covariates))
+
+
+res.dementia.aa.pgs <- ivglm_model_exp_num(data = dat.aa, exposure = "log2drinkpweek", ancestry = "aa", variant = "pgs.norm", outcome = "AD12.Dementia.outcome", covariates = c(demographics, "APOE012", additional_covars, combined.pgs.covariates))
+res.dementia.aa.gscan <- ivglm_model_exp_num(data = dat.aa, exposure = "log2drinkpweek", ancestry = "aa", variant = "PGS4_DPW_GSCAN19", outcome = "AD12.Dementia.outcome", covariates = c(demographics, "APOE012", additional_covars, combined.pgs.covariates))
+res.dementia.aa.rs1229984 <- ivglm_model_exp_num(data = dat.aa, exposure = "log2drinkpweek", ancestry = "aa", variant = "rs1229984", outcome = "AD12.Dementia.outcome", covariates = c(demographics, "APOE012", additional_covars, combined.pgs.covariates))
+
+
+res.dementia <- rbind(res.dementia.ea.pgs, res.dementia.ea.gscan, res.dementia.ea.rs1229984, res.dementia.aa.pgs, res.dementia.aa.gscan, res.dementia.aa.rs1229984)
+res.dementia$outcome <- "Dementia"
+```
+
+```{r}
+res.cind.ea.pgs <- ivglm_model_exp_num(data = dat.ea, exposure = "log2drinkpweek", ancestry = "ea", variant = "pgs.norm", outcome = "AD12.CIND.outcome", covariates = c(demographics, "APOE012", additional_covars, combined.pgs.covariates))
+res.cind.ea.gscan <- ivglm_model_exp_num(data = dat.ea, exposure = "log2drinkpweek", ancestry = "ea", variant = "PGS4_DPW_GSCAN19", outcome = "AD12.CIND.outcome", covariates = c(demographics, "APOE012", additional_covars, combined.pgs.covariates)) 
+res.cind.ea.rs1229984 <- ivglm_model_exp_num(data = dat.ea, exposure = "log2drinkpweek", ancestry = "ea", variant = "rs1229984", outcome = "AD12.CIND.outcome", covariates = c(demographics, "APOE012", additional_covars, combined.pgs.covariates))
+
+res.cind.aa.pgs <- ivglm_model_exp_num(data = dat.aa, exposure = "log2drinkpweek", ancestry = "aa", variant = "pgs.norm", outcome = "AD12.CIND.outcome", covariates = c(demographics, "APOE012", additional_covars, combined.pgs.covariates))
+res.cind.aa.gscan <- ivglm_model_exp_num(data = dat.aa, exposure = "log2drinkpweek", ancestry = "aa", variant = "PGS4_DPW_GSCAN19", outcome = "AD12.CIND.outcome", covariates = c(demographics, "APOE012", additional_covars, combined.pgs.covariates))
+res.cind.aa.rs1229984 <- ivglm_model_exp_num(data = dat.aa, exposure = "log2drinkpweek", ancestry = "aa", variant = "rs1229984", outcome = "AD12.CIND.outcome", covariates = c(demographics, "APOE012", additional_covars, combined.pgs.covariates))
+
+res.cind <- rbind(res.cind.ea.pgs, res.cind.ea.gscan, res.cind.ea.rs1229984,  res.cind.aa.pgs, res.cind.aa.gscan, res.cind.aa.rs1229984)
+res.cind$outcome <- "CIND"
+```
+
+```{r}
+res.binary.ea.pgs <- ivglm_model_exp_num(data = dat.ea, exposure = "log2drinkpweek", ancestry = "ea", variant = "pgs.norm", outcome = "AD12.binary", covariates = c(demographics, "APOE012", additional_covars, combined.pgs.covariates))
+res.binary.ea.gscan <- ivglm_model_exp_num(data = dat.ea, exposure = "log2drinkpweek", ancestry = "ea", variant = "PGS4_DPW_GSCAN19", outcome = "AD12.binary", covariates = c(demographics, "APOE012", additional_covars, combined.pgs.covariates))
+res.binary.ea.rs1229984 <- ivglm_model_exp_num(data = dat.ea, exposure = "log2drinkpweek", ancestry = "ea", variant = "rs1229984", outcome = "AD12.binary", covariates = c(demographics, "APOE012", additional_covars, combined.pgs.covariates))
+
+res.binary.aa.pgs <- ivglm_model_exp_num(data = dat.aa, exposure = "log2drinkpweek", ancestry = "aa", variant = "pgs.norm", outcome = "AD12.binary", covariates = c(demographics, "APOE012", additional_covars, combined.pgs.covariates))
+res.binary.aa.gscan <- ivglm_model_exp_num(data = dat.aa, exposure = "log2drinkpweek", ancestry = "aa", variant = "PGS4_DPW_GSCAN19", outcome = "AD12.binary", covariates = c(demographics, "APOE012", additional_covars, combined.pgs.covariates))
+res.binary.aa.rs1229984 <- ivglm_model_exp_num(data = dat.aa, exposure = "log2drinkpweek", ancestry = "aa", variant = "rs1229984", outcome = "AD12.binary", covariates = c(demographics, "APOE012", additional_covars, combined.pgs.covariates))
+
+res.binary <- rbind(res.binary.ea.pgs, res.binary.ea.gscan, res.binary.ea.rs1229984, res.binary.aa.pgs, res.binary.aa.gscan, res.binary.aa.rs1229984)
+res.binary$outcome <- "binary"
+```
+
+```{r}
+res <- rbind(res.binary, res.dementia, res.cind)
+onesmr.individual.variants <- rbind(res.binary, res.dementia, res.cind)
+res %>% filter(model == "ts") %>% dplyr::select(variant, outcome, ancestry, estimate, conf.low, conf.high, p.value)
+```
+
+```{r}
+forest <- ggplot(data=res,
+                 aes(
+                   x=variant,
+                   y=estimate,
+                   ymin=conf.low,
+                   ymax=conf.high,
+                   shape = ancestry,
+                   color = ancestry
+                 )
+                 ) +
+  xlab("") +
+  ylab("Odds Ratio for doubling in weekly alcohol consumption") +
+  labs(shape = "Outcome", color = "Outcome") +
+  geom_hline(yintercept = 1, linetype = 2) +
+  geom_pointrange(position=position_dodge(width = 1)) +
+  coord_flip(ylim = c(0,4)) +
+  theme_bw() +
+  facet_wrap(vars(outcome, model), nrow = 3) #+
+  #theme(text = element_text(size = 18))
+forest
+```
+
+# Conventional logistic regression
+
+Dementia in AA models don't converge
+```{r}
+res.dementia.ea.pgs <- ivglm_model_exp_num(data = dat.ea, exposure = "log2drinkpweek", ancestry = "ea", variant = "pgs.norm", outcome = "AD12.Dementia.outcome", covariates = c(precision.covariates, ancestry.covars))
+res.dementia.ea.gscan <- ivglm_model_exp_num(data = dat.ea, exposure = "log2drinkpweek", ancestry = "ea", variant = "PGS4_DPW_GSCAN19", outcome = "AD12.Dementia.outcome", covariates = c(precision.covariates, ancestry.covars))
+res.dementia.aa.pgs <- ivglm_model_exp_num(data = dat.aa, exposure = "log2drinkpweek", ancestry = "aa", variant = "pgs.norm", outcome = "AD12.Dementia.outcome", covariates = c(precision.covariates, ancestry.covars))
+res.dementia.aa.gscan <- ivglm_model_exp_num(data = dat.aa, exposure = "log2drinkpweek", ancestry = "aa", variant = "PGS4_DPW_GSCAN19", outcome = "AD12.Dementia.outcome", covariates = c(precision.covariates, ancestry.covars))
+
+res.dementia <- rbind(res.dementia.ea.pgs, res.dementia.ea.gscan, res.dementia.aa.pgs, res.dementia.aa.gscan)
+res.dementia$outcome <- "Dementia"
+```
+
+```{r}
+res.cind.ea.pgs <- ivglm_model_exp_num(data = dat.ea, exposure = "log2drinkpweek", ancestry = "ea", variant = "pgs.norm", outcome = "AD12.CIND.outcome", covariates = c(precision.covariates, ancestry.covars))
+res.cind.ea.gscan <- ivglm_model_exp_num(data = dat.ea, exposure = "log2drinkpweek", ancestry = "ea", variant = "PGS4_DPW_GSCAN19", outcome = "AD12.CIND.outcome", covariates = c(precision.covariates, ancestry.covars))
+res.cind.aa.pgs <- ivglm_model_exp_num(data = dat.aa, exposure = "log2drinkpweek", ancestry = "aa", variant = "pgs.norm", outcome = "AD12.CIND.outcome", covariates = c(precision.covariates, ancestry.covars))
+res.cind.aa.gscan <- ivglm_model_exp_num(data = dat.aa, exposure = "log2drinkpweek", ancestry = "aa", variant = "PGS4_DPW_GSCAN19", outcome = "AD12.CIND.outcome", covariates = c(precision.covariates, ancestry.covars))
+
+res.cind <- rbind(res.cind.ea.pgs, res.cind.ea.gscan, res.cind.aa.pgs, res.cind.aa.gscan)
+res.cind$outcome <- "CIND"
+```
+
+```{r}
+res.binary.ea.pgs <- ivglm_model_exp_num(data = dat.ea, exposure = "log2drinkpweek", ancestry = "ea", variant = "pgs.norm", outcome = "AD12.binary", covariates = c(precision.covariates, ancestry.covars))
+res.binary.ea.gscan <- ivglm_model_exp_num(data = dat.ea, exposure = "log2drinkpweek", ancestry = "ea", variant = "PGS4_DPW_GSCAN19", outcome = "AD12.binary", covariates = c(precision.covariates, ancestry.covars))
+res.binary.aa.pgs <- ivglm_model_exp_num(data = dat.aa, exposure = "log2drinkpweek", ancestry = "aa", variant = "pgs.norm", outcome = "AD12.binary", covariates = c(precision.covariates, ancestry.covars))
+res.binary.aa.gscan <- ivglm_model_exp_num(data = dat.aa, exposure = "log2drinkpweek", ancestry = "aa", variant = "PGS4_DPW_GSCAN19", outcome = "AD12.binary", covariates = c(precision.covariates, ancestry.covars))
+
+res.binary <- rbind(res.binary.ea.pgs, res.binary.ea.gscan, res.binary.aa.pgs, res.binary.aa.gscan)
+res.binary$outcome <- "binary"
+```
+
+```{r}
+res <- rbind(res.binary, res.dementia, res.cind)
+```
+
+```{r}
+forest <- ggplot(data=res,
+                 aes(
+                   x=variant,
+                   y=estimate,
+                   ymin=conf.low,
+                   ymax=conf.high,
+                   shape = ancestry,
+                   color = ancestry
+                 )
+                 ) +
+  xlab("") +
+  ylab("Odds Ratio for doubling in weekly alcohol consumption") +
+  labs(shape = "Outcome", color = "Outcome") +
+  geom_hline(yintercept = 1, linetype = 2) +
+  geom_pointrange(position=position_dodge(width = 1)) +
+  coord_flip(ylim = c(0,4)) +
+  theme_bw() +
+  facet_wrap(vars(outcome, model), nrow = 3) #+
+  #theme(text = element_text(size = 18))
+forest
+```
+
+Custom function to summarize ivglm output
+```{r}
+# Function accepts a fitted ivglm model and outputs tidy-formatted summary tibble with exponentiated effect estimate and 95% CIs
+tidy_ivglm_summary <- function(mod) {
+  summary <- summary(mod)
+  tibble(
+    term = attr(summary$coefficients, "dimnames")[[1]],
+    estimate = round((summary$coefficients[1]), 2),
+    std.error = round(summary$coefficients[2], 2),
+    statistic = round(summary$coefficients[3], 2),
+    p.value = round(summary$coefficients[4], 2),
+    conf.low = round((confint(mod)[[1]]), 2),
+    conf.high = round((confint(mod)[[2]]), 2)
+  )
+}
+
+tidy_ivglm_logit_summary <- function(mod) {
+  summary <- summary(mod)
+  tibble(
+    term = attr(summary$coefficients, "dimnames")[[1]],
+    estimate = round(exp(summary$coefficients[1]), 2),
+    std.error = round(exp(summary$coefficients[2]), 2),
+    statistic = round(summary$coefficients[3], 2),
+    p.value = round(summary$coefficients[4], 2),
+    conf.low = round(exp(confint(mod)[[1]]), 2),
+    conf.high = round(exp(confint(mod)[[2]]), 2)
+  )
+}
+```
+
+```{r}
+run_variant_dementia_ivglm <- function(data, variant, sample) {
+  
+  fitZ.L <- glm(formula = as.formula(paste0(add.backtick(variant), " ~ GENDER + NAGE + AncestryPC_1_5A + AncestryPC_1_5B + AncestryPC_1_5C + AncestryPC_1_5D + AncestryPC_1_5E")),
+                data = data)
+  summary(fitZ.L)
+  
+  fitY.LZX <-
+    glm(
+      formula = as.formula(paste0( "AD12.Dementia.outcome ~ ", add.backtick(variant), " + everdrinker + GENDER + NAGE +  AncestryPC_1_5A + AncestryPC_1_5B + AncestryPC_1_5C + AncestryPC_1_5D + AncestryPC_1_5E")),
+      family = "binomial",
+      data = data
+    )
+  summary(fitY.LZX)
+  
+  fitIV_g  <-
+    ivglm(
+      estmethod = "g",
+      X = "everdrinker",
+      Y = "AD12.Dementia.outcome",
+      fitZ.L = fitZ.L,
+      fitY.LZX = fitY.LZX,
+      data = data,
+      link = "logit"
+    )
+  
+  res <- tidy_ivglm_summary(fitIV_g)
+  res$outcome <- "Dementia"
+  res$sample <- sample
+  res$variant <- variant
+  
+  # Return fitIV_g or res
+  return(fitIV_g)
+}
+
+run_variant_cind_ivglm <- function(data, variant, sample) {
+  
+  fitZ.L <- glm(formula = as.formula(paste0(add.backtick(variant), " ~ GENDER + NAGE +  AncestryPC_1_5A + AncestryPC_1_5B + AncestryPC_1_5C + AncestryPC_1_5D + AncestryPC_1_5E")),
+                data = data)
+  summary(fitZ.L)
+  
+  fitY.LZX <-
+    glm(
+      formula = as.formula(paste0( "AD12.CIND.outcome ~ ", add.backtick(variant), " + everdrinker + GENDER + NAGE +  AncestryPC_1_5A + AncestryPC_1_5B + AncestryPC_1_5C + AncestryPC_1_5D + AncestryPC_1_5E")),
+      family = "binomial",
+      data = data
+    )
+  summary(fitY.LZX)
+  
+  fitIV_g  <-
+    ivglm(
+      estmethod = "g",
+      X = "everdrinker",
+      Y = "AD12.CIND.outcome",
+      fitZ.L = fitZ.L,
+      fitY.LZX = fitY.LZX,
+      data = data,
+      link = "logit"
+    )
+  
+  res <- tidy_ivglm_summary(fitIV_g)
+  res$outcome <- "CIND"
+  res$sample <- sample
+  res$variant <- variant
+  
+  # Return fitIV_g or res
+  return(fitIV_g)
+}
+# Example with a single variant
+x = run_variant_dementia_ivglm(data = dat.ea, sample = "European Ancestry", variant = "9:109345993:T:C")
+run_variant_cind_ivglm(data = dat.ea, sample = "European Ancestry", variant = "9:109345993:T:C")
+run_variant_dementia_ivglm(data = dat.aa, sample = "Black or African American", variant = "9:109345993:T:C")
+run_variant_cind_ivglm(data = dat.aa, sample = "Black or African American", variant = "9:109345993:T:C")
+```
+
+```{r}
+res.dem.ea <- lapply(colnames(variants), function(x) run_variant_dementia_ivglm(data = dat.ea, variant = x, sample = "European Ancestry")) %>% bind_rows
+res.dem.aa <- lapply(colnames(variants), function(x) run_variant_dementia_ivglm(data = dat.ea, variant = x, sample = "Black or African American")) %>% bind_rows
+res.cind.ea <- lapply(colnames(variants), function(x) run_variant_cind_ivglm(data = dat.ea, variant = x, sample = "European Ancestry")) %>% bind_rows
+res.cind.aa <- lapply(colnames(variants), function(x) run_variant_cind_ivglm(data = dat.ea, variant = x, sample = "Black or African American")) %>% bind_rows
+```
+
+```{r}
+res <- rbind(res.dem.ea, res.dem.aa, res.cind.ea, res.cind.aa)
+```
+
+```{r}
+res.graph <- 
+  res %>%
+  filter(conf.high < 10)
+
+res %>%
+  filter(conf.high > 10) %>%
+  tally
+
+forest <- ggplot(data=res.graph,
+                 aes(
+                   x=stringr::str_wrap(sample, 10),
+                   y=estimate,
+                   ymin=conf.low,
+                   ymax=conf.high,
+                   shape = outcome,
+                   color = outcome)) +
+  xlab("") +
+  ylab("Odds Ratio for Ever Drinking") +
+  labs(shape = "Outcome", color = "Outcome") +
+  geom_hline(yintercept = 1, linetype = 2) +
+  geom_pointrange(position=position_dodge(width = 1)) +
+  coord_cartesian(ylim = c(0, 2.5)) +
+  coord_flip() +
+  theme_bw() +
+  theme(text = element_text(size = 18))
+forest
+```
+
+# Two-stage least squares
+
+According to the R package documentation, for two-stage least squares, we use binomial links for the glm() call, and apply the ctrl=T argument in the ivglm() call without specifying a link function in the ivglm() call
+```{r}
+run_variant_dementia_ivglm <- function(data, variant, sample) {
+  
+  fitY.LX <-
+    glm(
+      formula = as.formula(paste0( "AD12.CIND.outcome ~ + everdrinker + GENDER + NAGE +  AncestryPC_1_5A + AncestryPC_1_5B + AncestryPC_1_5C + AncestryPC_1_5D + AncestryPC_1_5E")),
+      family = "binomial",
+      data = data
+    )
+  summary(fitY.LX)
+  
+  fitX.LZ <-
+    glm(
+      formula = as.formula(paste0( "everdrinker ~ ", add.backtick(variant), " + GENDER + NAGE +  AncestryPC_1_5A + AncestryPC_1_5B + AncestryPC_1_5C + AncestryPC_1_5D + AncestryPC_1_5E")),
+      family = "binomial",
+      data = data
+    )
+  summary(fitX.LZ)
+  
+  fitIV_g  <-
+    ivglm(
+      estmethod = "ts",
+      X = "everdrinker",
+      Y = "AD12.Dementia.outcome",
+      fitX.LZ = fitX.LZ,
+      fitY.LX = fitY.LX,
+      data = data,
+      ctrl = T
+    )
+  
+  res <- tidy_ivglm_logit_summary(fitIV_g)
+  res$outcome <- "Dementia"
+  res$sample <- sample
+  res$variant <- variant
+  
+  # Return fitIV_g or res
+  return(fitIV_g)
+}
+
+run_variant_cind_ivglm <- function(data, variant, sample) {
+  
+  fitY.LX <-
+    glm(
+      formula = as.formula(paste0( "AD12.CIND.outcome ~ + everdrinker + GENDER + NAGE +  AncestryPC_1_5A + AncestryPC_1_5B + AncestryPC_1_5C + AncestryPC_1_5D + AncestryPC_1_5E")),
+      family = "binomial",
+      data = data
+    )
+  summary(fitY.LX)
+  
+  fitX.LZ <-
+    glm(
+      formula = as.formula(paste0( "everdrinker ~ ", add.backtick(variant), " + GENDER + NAGE +  AncestryPC_1_5A + AncestryPC_1_5B + AncestryPC_1_5C + AncestryPC_1_5D + AncestryPC_1_5E")),
+      family = "binomial",
+      data = data
+    )
+  summary(fitX.LZ)
+  
+  fitIV_g  <-
+    ivglm(
+      estmethod = "ts",
+      X = "everdrinker",
+      Y = "AD12.CIND.outcome",
+      fitX.LZ = fitX.LZ,
+      fitY.LX = fitY.LX,
+      data = data,
+      ctrl = T
+    )
+  
+  res <- tidy_ivglm_logit_summary(fitIV_g)
+  res$outcome <- "CIND"
+  res$sample <- sample
+  res$variant <- variant
+  
+  # Return fitIV_g or
+  return(fitIV_g)
+}
+
+# Example with a single variant
+x = run_variant_dementia_ivglm(data = dat.ea, sample = "European Ancestry", variant = "9:109345993:T:C")
+summary(x)
+
+run_variant_dementia_ivglm(data = dat.ea, sample = "European Ancestry", variant = "9:109345993:T:C") %>% summary
+run_variant_cind_ivglm(data = dat.ea, sample = "European Ancestry", variant = "9:109345993:T:C") %>% summary
+run_variant_dementia_ivglm(data = dat.aa, sample = "Black or African American", variant = "9:109345993:T:C") %>% summary
+run_variant_cind_ivglm(data = dat.aa, sample = "Black or African American", variant = "9:109345993:T:C") %>% summary
+```
+
+```{r}
+tidy_ivglm_logit_summary <- function(mod) {
+  summary <- summary(mod)
+  tibble(
+    term = attr(summary$coefficients, "dimnames")[[1]][2],
+    estimate = round(exp(summary$coefficients[1]), 2),
+    std.error = round(exp(summary$coefficients[2]), 2),
+    statistic = round(summary$coefficients[3], 2),
+    p.value = round(summary$coefficients[4], 2),
+    conf.low = round(exp(confint(mod)[[1]]), 2),
+    conf.high = round(exp(confint(mod)[[2]]), 2)
+  )
+}
+```
+
+```{r}
+tidy_ivglm_logit_summary(x)
+mod <- x
+summary <- summary(x)
+# term
+term <- attr(x.sum$coefficients, "dimnames")[[1]][2]
+
+# p.value
+p.value <- round(summary$coefficients[2, 4], 2)
+
+# conf.low
+conf.low <- confint(mod)[2,1]
+conf.low
+# conf.high
+conf.high <- confint(mod)[2,2]
+conf.high
+```
+
+```{r}
+x.sum
+```
+
+Ever drinker models
+```{r}
+data = dat.ea
+variant = "pgs.norm" #"9:109345993:T:C"
+outcome = "AD12.Dementia.outcome"
+covariates = c("GENDER", "NAGE", "AncestryPC_1_5A", "AncestryPC_1_5B", "AncestryPC_1_5C", "AncestryPC_1_5D", "AncestryPC_1_5E")
+precision.covariates = c("NAGE", "GENDER", "DEGREE", "drinkpweek",
+                "APOE012", "R11SMOKEV", "NMARST", "R11CESD", "R11CONDE", "R11SAYRET")
+ancestry.covars = c("AncestryPC_1_5A", "AncestryPC_1_5B", "AncestryPC_1_5C", "AncestryPC_1_5D", "AncestryPC_1_5E")
+exposure = "logdrinkpweek"
+
+ivglm_model(data = dat.ea, ancestry = "ea", variant = "9:109345993:T:C", outcome = "AD12.Dementia.outcome", covariates = covariates)
+
+# IVGLM model for both ts and g-est with everdrinker binary exposure, continuous IV, and binary outcome, implemented with ivtools package
+ivglm_model <- function(data, ancestry, variant, outcome, covariates) {
+
+  ## Two-stage estimation
+  fitX.LZ <-
+    glm(formula = as.formula(
+      paste0(
+        "everdrinker ~ ",
+        add.backtick(variant),
+        " + ", paste(covariates, collapse = " + ")
+      )
+    ),
+    family = "binomial",
+    data = data)
+  fitY.LX <-
+    glm(formula = as.formula(
+      paste0(
+        outcome,
+        " ~ + everdrinker + ", paste(covariates, collapse = " + ")
+      )
+    ),
+    family = "binomial",
+    data = data)
+  fitIV_ts  <-
+    ivglm(
+      estmethod = "ts",
+      X = "everdrinker",
+      Y = outcome,
+      fitX.LZ = fitX.LZ,
+      fitY.LX = fitY.LX,
+      data = data,
+      ctrl = T
+    )
+  
+  # summarize ts model
+  summary.ts <- summary(fitIV_ts)
+    
+  # export to results table
+  res.ts <- data.frame(
+    variant = variant,
+    model = "ts",
+    ancestry = ancestry,
+    term = "everdrinker",
+    estimate = round(exp(fitIV_ts$est["everdrinker"]), 2),
+    std.error = round(summary.ts$coefficients[2,2], 2),
+    statistic = round(summary.ts$coefficients[2,3], 2),
+    p.value =  round(summary.ts$coefficients[2,4], 2),
+    conf.low = round(exp(confint(fitIV_ts)[2,1]), 2),
+    conf.high = round(exp(confint(fitIV_ts)[2,2]), 2),
+    covariates = paste(covariates, collapse = " + ")
+  )
+  
+  ## G-estimation
+  fitZ.L <-
+    glm(formula = as.formula(
+      paste0(
+        add.backtick(variant),
+        " ~ ", paste(covariates, collapse = " + ")
+      )
+    ),
+    data = data)
+  
+  fitY.LZX <-
+    glm(formula = as.formula(
+      paste0(
+        outcome,
+        " ~ ",
+        add.backtick(variant),
+        " + everdrinker + ", paste(covariates, collapse = " + ")
+      )
+    ),
+    family = "binomial",
+    data = data)
+  
+  fitIV_g  <-
+    ivglm(
+      estmethod = "g",
+      X = "everdrinker",
+      Y = outcome,
+      fitZ.L = fitZ.L,
+      fitY.LZX = fitY.LZX,
+      data = data,
+      link = "logit"
+    )
+
+  # Summarize g-est model
+  summary.g <- summary(fitIV_g)
+  
+  # Export g-est model results
+  res.g <- data.frame(
+    variant = variant,
+    model = "g",
+    ancestry = ancestry,
+    term = "everdrinker",
+    estimate = round(exp(fitIV_g$est["everdrinker"]), 2),
+    std.error = round(summary.g$coefficients[2], 2),
+    statistic = round(summary.g$coefficients[3], 2),
+    p.value =  round(summary.g$coefficients[4], 2),
+    conf.low = round(exp(confint(fitIV_g)[1]), 2),
+    conf.high = round(exp(confint(fitIV_g)[2]), 2),
+    covariates = paste(covariates, collapse = " + ")
+  )
+  
+  # Concatenate model results
+  res <- rbind(res.ts, res.g)
+  rownames(res) <- NULL
+  
+  # Return concatenated results
+  return(res)
+}
+
+# IVGLM model for both ts and g-est with a binary exposure, continuous IV, and binary outcome, without covariates implemented with ivtools package
+ivglm_model_no_covars <- function(data, ancestry, variant, outcome) {
+
+  #two-stage estimation
+  fitX.LZ <-
+    glm(formula = as.formula(
+      paste0(
+        "everdrinker ~ ",
+        add.backtick(variant)
+      )
+    ),
+    family = "binomial",
+    data = data)
+  fitY.LX <-
+    glm(formula = as.formula(
+      paste0(
+        outcome,
+        " ~ + everdrinker"
+      )
+    ),
+    family = "binomial",
+    data = data)
+  fitIV_ts  <-
+    ivglm(
+      estmethod = "ts",
+      X = "everdrinker",
+      Y = outcome,
+      fitX.LZ = fitX.LZ,
+      fitY.LX = fitY.LX,
+      data = data,
+      ctrl = T
+    )
+  
+  # summarize ts model
+  summary.ts <- summary(fitIV_ts)
+    
+  # export to results table
+  res.ts <- data.frame(
+    variant = variant,
+    model = "ts",
+    ancestry = ancestry,
+    term = "everdrinker",
+    estimate = round(exp(fitIV_ts$est["everdrinker"]), 2),
+    std.error = round(summary.ts$coefficients[2,2], 2),
+    statistic = round(summary.ts$coefficients[2,3], 2),
+    p.value =  round(summary.ts$coefficients[2,4], 2),
+    conf.low = round(exp(confint(fitIV_ts)[2,1]), 2),
+    conf.high = round(exp(confint(fitIV_ts)[2,2]), 2),
+    covariates = "none"
+  )
+  
+  # G-estimation
+  fitZ.L <-
+    glm(formula = as.formula(
+      paste0(
+        add.backtick(variant),
+        " ~ 1"
+      )
+    ),
+    data = data)
+  
+  fitY.LZX <-
+    glm(formula = as.formula(
+      paste0(
+        outcome,
+        " ~ ",
+        add.backtick(variant),
+        " + everdrinker"
+      )
+    ),
+    family = "binomial",
+    data = data)
+  
+  fitIV_g  <-
+    ivglm(
+      estmethod = "g",
+      X = "everdrinker",
+      Y = outcome,
+      fitZ.L = fitZ.L,
+      fitY.LZX = fitY.LZX,
+      data = data,
+      link = "logit"
+    )
+
+  # Summarize g-est model
+  summary.g <- summary(fitIV_g)
+  
+  # Export g-est model results
+  res.g <- data.frame(
+    variant = variant,
+    model = "g",
+    ancestry = ancestry,
+    term = "everdrinker",
+    estimate = round(exp(fitIV_g$est["everdrinker"]), 2),
+    std.error = round(summary.g$coefficients[2], 2),
+    statistic = round(summary.g$coefficients[3], 2),
+    p.value =  round(summary.g$coefficients[4], 2),
+    conf.low = round(exp(confint(fitIV_g)[1]), 2),
+    conf.high = round(exp(confint(fitIV_g)[2]), 2),
+    covariates = "none"
+  )
+  
+  # Concatenate model results
+  res <- rbind(res.ts, res.g)
+  rownames(res) <- NULL
+  
+  # Return concatenated results
+  return(res)
+}
+```
+
+
+```{r}
+data = dat.ea
+ancestry = "ea"
+variant = "PGS4_DPW_GSCAN19" #"pgs.norm" #"9:109345993:T:C"
+outcome = "AD12.Dementia.outcome"
+covariates = c("GENDER", "NAGE", "AncestryPC_1_5A", "AncestryPC_1_5B", "AncestryPC_1_5C", "AncestryPC_1_5D", "AncestryPC_1_5E")
+precision.covariates = c("NAGE", "GENDER", "DEGREE", "drinkpweek",
+                "APOE012", "R11SMOKEV", "NMARST", "R11CESD", "R11CONDE", "R11SAYRET")
+ancestry.covars = c("AncestryPC_1_5A", "AncestryPC_1_5B", "AncestryPC_1_5C", "AncestryPC_1_5D", "AncestryPC_1_5E")
+exposure = "drinkpweek"
+```
+
+
+# Abstract Analytic
+
+# PGS of GSCAN DPW SNPs
+Analytic 99 SNP 1SMR - EA
+```{r}
+these.covars <- c(ancestry.covars, precision.covariates)
+
+ivglm_model(data = dat.ea, ancestry = "ea", variant = "pgs.norm", outcome = "AD12.Dementia.outcome", covariates = ancestry.covars)
+ivglm_model(data = dat.ea, ancestry = "ea", variant = "pgs.norm", outcome = "AD12.CIND.outcome", covariates = ancestry.covars)
+ivglm_model(data = dat.ea, ancestry = "ea", variant = "pgs.norm", outcome = "AD12.binary", covariates = ancestry.covars)
+
+ivglm_model(data = dat.ea, ancestry = "ea", variant = "pgs.norm", outcome = "AD12.Dementia.outcome", covariates = covariates)
+ivglm_model(data = dat.ea, ancestry = "ea", variant = "pgs.norm", outcome = "AD12.CIND.outcome", covariates = covariates)
+ivglm_model(data = dat.ea, ancestry = "ea", variant = "pgs.norm", outcome = "AD12.binary", covariates = covariates)
+
+ivglm_model(data = dat.ea, ancestry = "ea", variant = "pgs.norm", outcome = "AD12.Dementia.outcome", covariates = these.covars)
+ivglm_model(data = dat.ea, ancestry = "ea", variant = "pgs.norm", outcome = "AD12.CIND.outcome", covariates = these.covars)
+ivglm_model(data = dat.ea, ancestry = "ea", variant = "pgs.norm", outcome = "AD12.binary", covariates = these.covars)
+```
+
+# PGS of all SNPs
+
+AAIC Poster/Abstract
+```{r}
+dat.test <- dat.ea %>% filter(NIWWAVE == T)
+dat.test$AD12 %>% summary
+
+ivglm_model(data = dat.ea %>% filter(NIWWAVE == T), ancestry = "ea", variant = "PGS4_DPW_GSCAN19", outcome = "AD12.Dementia.outcome", covariates = ancestry.covars)
+ivglm_model(data = dat.ea %>% filter(NIWWAVE == T), ancestry = "ea", variant = "PGS4_DPW_GSCAN19", outcome = "AD12.CIND.outcome", covariates = ancestry.covars)
+```
+
+
+Analytic whole-genome SNP 1SMR - EA
+```{r}
+ivglm_model(data = dat.ea, ancestry = "ea", variant = "PGS4_DPW_GSCAN19", outcome = "AD12.Dementia.outcome", covariates = ancestry.covars)
+ivglm_model(data = dat.ea, ancestry = "ea", variant = "PGS4_DPW_GSCAN19", outcome = "AD12.CIND.outcome", covariates = ancestry.covars)
+ivglm_model(data = dat.ea, ancestry = "ea", variant = "PGS4_DPW_GSCAN19", outcome = "AD12.binary", covariates = ancestry.covars)
+
+ivglm_model(data = dat.ea, ancestry = "ea", variant = "PGS4_DPW_GSCAN19", outcome = "AD12.Dementia.outcome", covariates = covariates)
+ivglm_model(data = dat.ea, ancestry = "ea", variant = "PGS4_DPW_GSCAN19", outcome = "AD12.CIND.outcome", covariates = covariates)
+ivglm_model(data = dat.ea, ancestry = "ea", variant = "PGS4_DPW_GSCAN19", outcome = "AD12.binary", covariates = covariates)
+
+ivglm_model(data = dat.ea, ancestry = "ea", variant = "PGS4_DPW_GSCAN19", outcome = "AD12.Dementia.outcome", covariates = these.covars)
+ivglm_model(data = dat.ea, ancestry = "ea", variant = "PGS4_DPW_GSCAN19", outcome = "AD12.CIND.outcome", covariates = these.covars)
+ivglm_model(data = dat.ea, ancestry = "ea", variant = "PGS4_DPW_GSCAN19", outcome = "AD12.binary", covariates = these.covars)
+```
+Analytic 99 SNP 1SMR - AA
+```{r}
+ivglm_model(data = dat.aa, ancestry = "aa", variant = "pgs.norm", outcome = "AD12.Dementia.outcome", covariates = ancestry.covars)
+ivglm_model(data = dat.aa, ancestry = "aa", variant = "pgs.norm", outcome = "AD12.CIND.outcome", covariates = ancestry.covars)
+ivglm_model(data = dat.aa, ancestry = "aa", variant = "pgs.norm", outcome = "AD12.binary", covariates = ancestry.covars)
+
+ivglm_model(data = dat.aa, ancestry = "aa", variant = "pgs.norm", outcome = "AD12.Dementia.outcome", covariates = these.covars)
+ivglm_model(data = dat.aa, ancestry = "aa", variant = "pgs.norm", outcome = "AD12.CIND.outcome", covariates = these.covars)
+ivglm_model(data = dat.aa, ancestry = "aa", variant = "pgs.norm", outcome = "AD12.binary", covariates = these.covars)
+```
+Analytic whole-genome SNP 1SMR - AA
+
+```{r}
+ivglm_model(data = dat.aa, ancestry = "aa", variant = "PGS4_DPW_GSCAN19", outcome = "AD12.Dementia.outcome", covariates = ancestry.covars)
+ivglm_model(data = dat.aa, ancestry = "aa", variant = "PGS4_DPW_GSCAN19", outcome = "AD12.CIND.outcome", covariates = ancestry.covars)
+ivglm_model(data = dat.aa, ancestry = "aa", variant = "PGS4_DPW_GSCAN19", outcome = "AD12.binary", covariates = ancestry.covars)
+
+ivglm_model(data = dat.aa, ancestry = "aa", variant = "PGS4_DPW_GSCAN19", outcome = "AD12.Dementia.outcome", covariates = these.covars)
+ivglm_model(data = dat.aa, ancestry = "aa", variant = "PGS4_DPW_GSCAN19", outcome = "AD12.CIND.outcome", covariates = these.covars)
+ivglm_model(data = dat.aa, ancestry = "aa", variant = "PGS4_DPW_GSCAN19", outcome = "AD12.binary", covariates = these.covars)
+```
+
+
+```{r}
+ivglm_model_no_covars(data = dat.ea, ancestry = "ea", variant = "PGS4_DPW_GSCAN19", outcome = "AD12.Dementia.outcome")
+ivglm_model_no_covars(data = dat.ea, ancestry = "ea", variant = "PGS4_DPW_GSCAN19", outcome = "AD12.CIND.outcome")
+ivglm_model_no_covars(data = dat.ea, ancestry = "ea", variant = "PGS4_DPW_GSCAN19", outcome = "AD12.binary")
+```
+
+# Drinks per week exposure
+
+```{r}
+ivglm_model_exp_num(data = dat.ea, ancestry = "ea", variant = "PGS4_DPW_GSCAN19", exposure = "drinkpweek", outcome = "AD12.Dementia.outcome", covariates = ancestry.covars)
+ivglm_model_exp_num(data = dat.ea, ancestry = "ea", variant = "PGS4_DPW_GSCAN19", exposure = "drinkpweek", outcome = "AD12.CIND.outcome", covariates = ancestry.covars)
+ivglm_model_exp_num(data = dat.ea, ancestry = "ea", variant = "PGS4_DPW_GSCAN19", exposure = "drinkpweek", outcome = "AD12.binary", covariates = ancestry.covars)
+```
+
+```{r}
+ivglm_model_exp_num(data = dat.aa, ancestry = "aa", variant = "PGS4_DPW_GSCAN19", exposure = "drinkpweek", outcome = "AD12.Dementia.outcome", covariates = ancestry.covars)
+ivglm_model_exp_num(data = dat.aa, ancestry = "aa", variant = "PGS4_DPW_GSCAN19", exposure = "drinkpweek", outcome = "AD12.CIND.outcome", covariates = ancestry.covars)
+ivglm_model_exp_num(data = dat.aa, ancestry = "aa", variant = "PGS4_DPW_GSCAN19", exposure = "drinkpweek", outcome = "AD12.binary", covariates = ancestry.covars)
+```
+
+```{r}
+hist(dat.ea$PGS4_DPW_GSCAN19)
+hist(dat.ea$pgs.norm)
+hist(dat.aa$pgs.norm)
+```
+
+```{r}
+ivglm_model_exp_num_no_covars(data = dat.ea, ancestry = "ea", variant = "pgs.norm", exposure = "drinkpweek", outcome = "AD12.Dementia.outcome")
+ivglm_model_exp_num_no_covars(data = dat.ea, ancestry = "ea", variant = "pgs.norm", exposure = "drinkpweek", outcome = "AD12.CIND.outcome")
+ivglm_model_exp_num_no_covars(data = dat.ea, ancestry = "ea", variant = "pgs.norm", exposure = "drinkpweek", outcome = "AD12.binary")
+```
+
+```{r}
+ivglm_model_exp_num(data = dat.ea, ancestry = "ea", variant = "pgs.norm", exposure = "drinkpweek", outcome = "AD12.Dementia.outcome", covariates = ancestry.covars)
+ivglm_model_exp_num(data = dat.ea, ancestry = "ea", variant = "pgs.norm", exposure = "drinkpweek", outcome = "AD12.CIND.outcome", covariates = ancestry.covars)
+ivglm_model_exp_num(data = dat.ea, ancestry = "ea", variant = "pgs.norm", exposure = "drinkpweek", outcome = "AD12.binary", covariates = ancestry.covars)
+```
+
+```{r}
+ivglm_model_exp_num(data = dat.ea, ancestry = "ea", variant = "pgs.norm", exposure = "drinkpweek", outcome = "AD12.Dementia.outcome", covariates = covariates)
+ivglm_model_exp_num(data = dat.ea, ancestry = "ea", variant = "pgs.norm", exposure = "drinkpweek", outcome = "AD12.CIND.outcome", covariates = covariates)
+ivglm_model_exp_num(data = dat.ea, ancestry = "ea", variant = "pgs.norm", exposure = "drinkpweek", outcome = "AD12.binary", covariates = covariates)
+```
+
+Each variant individually with drinkpweek
+```{r}
+res <- map(colnames(variants), ~ ivglm_model_exp_num(data = dat.ea, ancestry = "ea", variant = .x, exposure = "drinkpweek", outcome = "AD12.Dementia.outcome", covariates = ancestry.covars)) %>% bind_rows()
+```
+
+
+# Each variant individually
+
+```{r}
+res <- map(colnames(variants), ~ ivglm_model(data = dat.ea, ancestry = "ea", variant = .x, outcome = "AD12.Dementia.outcome", covariates = covariates)) %>% bind_rows()
+```
+
+```{r}
+res.base <- map(colnames(variants), ~ ivglm_model(data = dat.ea, ancestry = "ea", variant = .x, outcome = "AD12.Dementia.outcome", covariates = c("AncestryPC_1_5A", "AncestryPC_1_5B", "AncestryPC_1_5C", "AncestryPC_1_5D", "AncestryPC_1_5E"))) %>% bind_rows()
+```
+
+```{r}
+res.ad12 <- map(colnames(variants), ~ ivglm_model(data = dat.ea, ancestry = "ea", variant = .x, outcome = "AD12.binary", covariates = covariates)) %>% bind_rows()
+```
+
+```{r}
+res.ad12.base <- map(colnames(variants), ~ ivglm_model(data = dat.ea, ancestry = "ea", variant = .x, outcome = "AD12.binary", covariates = c("AncestryPC_1_5A", "AncestryPC_1_5B", "AncestryPC_1_5C", "AncestryPC_1_5D", "AncestryPC_1_5E"))) %>% bind_rows()
+```
+
+
+Univariate associations
+```{r}
+fit <- glm(formula = as.formula("AD12.Dementia.outcome ~ everdrinker"),
+      family = "binomial", data = dat.ea)
+summary(fit)
+
+fit_variant_glm <- function(data, variant) {
+  fit <- glm(formula = as.formula(paste0("AD12.Dementia.outcome ~ ", add.backtick(variant))),
+      family = "binomial", data = data)
+  return(tidy(fit))
+}
+res.fit_variant_glm <- map(colnames(variants), ~ fit_variant_glm(data = dat.ea, .x)) %>% bind_rows() %>% filter(!(term == "(Intercept)"))
+
+fit_variant_glm_exposure <- function(data, variant) {
+  fit <- glm(formula = as.formula(paste0("everdrinker ~ ", add.backtick(variant))),
+      family = "binomial", data = data)
+  return(tidy(fit))
+}
+res.fit_variant_glm_exposure <- map(colnames(variants), ~ fit_variant_glm_exposure(data = dat.ea, .x)) %>% bind_rows() %>% filter(!(term == "(Intercept)"))
+```
+
+```{r}
+ex.form <-
+  create.formula(outcome.name = "AD12.Dementia.outcome",
+                 input.names = colnames(variants),
+                 dat = dat.ea)
+
+r2.fit <- glm(formula = ex.form$formula,
+    family = "binomial",
+    data = dat.ea)
+
+summary(r2.fit)
+```
+
+
+### Bootstrap
+From ivtools paper Appendix D
+```{r}
+set.seed(1)
+```
+
+
+```{r}
+#variant <- "9:109345993:T:C"
+#data <- dat.ea
+#outcome <- "AD12.Dementia.outcome"
+
+bootfun <- function(data, indicies) {
+  
+  variant = "9:109345993:T:C"
+  outcome = "AD12.Dementia.outcome"
+  
+  # boot package input helper
+  dd <- data[indicies,]
+  
+  #two-stage estimation
+  fitX.LZ <-
+    glm(formula = as.formula(
+      paste0(
+        "everdrinker ~ ",
+        add.backtick(variant),
+        " + GENDER + NAGE +  AncestryPC_1_5A + AncestryPC_1_5B + AncestryPC_1_5C + AncestryPC_1_5D + AncestryPC_1_5E"
+      )
+    ),
+    family = "binomial",
+    data = dd)
+  fitY.LX <-
+    glm(formula = as.formula(
+      paste0(
+        outcome,
+        " ~ + everdrinker + GENDER + NAGE +  AncestryPC_1_5A + AncestryPC_1_5B + AncestryPC_1_5C + AncestryPC_1_5D + AncestryPC_1_5E"
+      )
+    ),
+    family = "binomial",
+    data = dd)
+  fitIV_ts  <-
+    ivglm(
+      estmethod = "ts",
+      X = "everdrinker",
+      Y = outcome,
+      fitX.LZ = fitX.LZ,
+      fitY.LX = fitY.LX,
+      data = dd,
+      ctrl = T,
+      vcov.fit = FALSE
+    )
+  est_ts <- fitIV_ts$est["everdrinker"]
+  
+  # Debugging purposes
+  #est_ts
+  
+  # G-estimation
+  fitZ.L <-
+    glm(formula = as.formula(
+      paste0(
+        add.backtick(variant),
+        " ~ GENDER + NAGE + AncestryPC_1_5A + AncestryPC_1_5B + AncestryPC_1_5C + AncestryPC_1_5D + AncestryPC_1_5E"
+      )
+    ),
+    data = dd)
+  
+  fitY.LZX <-
+    glm(formula = as.formula(
+      paste0(
+        outcome,
+        " ~ ",
+        add.backtick(variant),
+        " + everdrinker + GENDER + NAGE +  AncestryPC_1_5A + AncestryPC_1_5B + AncestryPC_1_5C + AncestryPC_1_5D + AncestryPC_1_5E"
+      )
+    ),
+    family = "binomial",
+    data = dd)
+  
+  fitIV_g  <-
+    ivglm(
+      estmethod = "g",
+      X = "everdrinker",
+      Y = outcome,
+      fitZ.L = fitZ.L,
+      fitY.LZX = fitY.LZX,
+      data = dd,
+      link = "logit",
+      vcov.fit = FALSE
+    )
+  est_g <- fitIV_g$est["everdrinker"]
+  
+  # Debugging purposes
+  #est_g
+  
+  return(c(est_ts, est_g))
+}
+bb <- boot(data=dat.ea, statistic=bootfun, R=10000)
+```
+
+
+R = 100
+```{r}
+apply(bb$t, MARGIN=2, FUN=sd, na.rm=TRUE)
+```
+
+R = 1000
+```{r}
+apply(bb$t, MARGIN=2, FUN=sd, na.rm=TRUE)
+```
+R = 10000
+```{r}
+apply(bb$t, MARGIN=2, FUN=sd, na.rm=TRUE)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Attempt to rerun previous analysis with everdrinker instead of drinksperweek as the outcome; Error in g %*% psi : requires numeric/complex matrix/vector arguments solved by converting input data to dataframe with as.data.frame()
+```{r, eval=F}
+fitZ.L <- glm(formula = EA_PGS4_DPW_GSCAN19 ~ 1,
+              family = "gaussian", data = dat.ea)
+summary(fitZ.L)
+
+fitY.LZX <- glm(formula = AD12.Dementia.outcome ~ EA_PGS4_DPW_GSCAN19 + everdrinker,
+                family = "binomial", data = dat.ea)
+summary(fitY.LZX)
+
+fitIV_g  <- ivglm(estmethod = "g", X = "everdrinker", Y = "AD12.Dementia.outcome", fitZ.L = fitZ.L, fitY.LZX = fitY.LZX,
+                  data = dat.ea, link = "identity")
+
+g.dem.ea.tidy <- tidy_ivglm_summary(fitIV_g)
+g.dem.ea.tidy$outcome <- "Dementia"
+g.dem.ea.tidy$sample <- "European ancestry"
+g.dem.ea.tidy
+```
+
+```{r, eval=F}
+
+fitZ.L   <- glm(formula = EA_PGS4_DPW_GSCAN19 ~ 1,
+              family = "gaussian", data = dat.ea)
+summary(fitZ.L)
+
+fitY.LZX <- glm(formula = AD12.CIND.outcome ~ EA_PGS4_DPW_GSCAN19 + drinkpweek,
+                family = "binomial", data = dat.ea)
+summary(fitY.LZX)
+
+
+fitIV_g  <- ivglm(estmethod = "g", X = "drinkpweek", fitZ.L = fitZ.L, fitY.LZX = fitY.LZX,
+                  data = dat.ea, link = "logit")
+summary(fitIV_g)
+
+g.cind.ea.tidy <- tidy_ivglm_summary(fitIV_g)
+g.cind.ea.tidy$outcome <- "CIND"
+g.cind.ea.tidy$sample <- "European ancestry"
+```
