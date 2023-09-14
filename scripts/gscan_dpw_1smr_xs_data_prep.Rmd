@@ -1,0 +1,1246 @@
+---
+title: "gscan_dpw_variants_dementia_hrs_1smr"
+author: "Kyle Abraham Campbell"
+date: "4/9/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(devtools)
+library(DiagrammeR)
+library(DiagrammeRsvg)  # for conversion to svg
+library(haven)
+library(knitr)
+library(glue)
+library(gtsummary) 
+library(here)
+library(parameters)
+library(readxl)
+library(rsvg)
+library(skimr)
+library(tidymodels)
+library(tidyverse)
+library(vcfR)
+
+source(here("scripts", "formatting_functions.R"))
+
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Helpful resource for overview of 1 and 2 SMR, https://www.ncbi.nlm.nih.gov/pmc/articles/PMC8360373/
+
+Put together datasets and variables (RAND and HRS)
+```{r, eval = F}
+load("G:/.shortcut-targets-by-id/0B-GNKGtaoz_iZVAtUGdWQ2lLelE/AD_R01_WB/Data/hrs_democoggen_wide20200910.Rda")
+hrs <- hrs0910
+rm(hrs0910)
+```
+
+```{r, eval = F}
+rand <- readRDS(here("data", "randhrs1992_2018v1"))
+```
+
+Add HHIDPN for merging with RAND data
+```{r, eval = F}
+hrs <- 
+  hrs %>%
+  mutate(HHIDPN = paste0(HHID, PN)) %>% 
+  dplyr::select(HHIDPN, everything())
+```
+
+Reconstruct HHIDPN in RAND to avoid leading zero truncation and pull RAND variables of interest
+```{r, eval = F}
+rand.select <-
+  rand %>%
+  mutate(HHIDPN = paste0(HHID, PN)) %>%
+  dplyr::select(HHIDPN, R11CONDE, R11SAYRET)
+```
+
+```{r, eval = F}
+rm(rand)
+```
+
+Data preprocessing
+```{r, eval = F}
+dat.merged <-
+  left_join(
+    hrs,
+    rand.select
+  )
+saveRDS(dat.merged, file = here("data", paste0(Sys.Date(), "_data_prep_alcohol_dementia.rda")))
+rm(dat.merged)
+rm(rand.select)
+rm(hrs)
+```
+
+Load data
+```{r}
+hrs <- readRDS(here("data", "2022-08-18_data_prep_alcohol_dementia.rda"))
+```
+
+## Formatting and inclusion/exclusion
+```{r}
+hrs <-
+  hrs %>%
+  #filter(NIWWAVE == 1) %>% # limit to 2012 wave
+  mutate(AD12 = factor_cog_lw(AD12)) %>% # format cognition variable
+  mutate(drinkpweek = R11DRINKD * R11DRINKN) %>%
+  mutate(logdrinkpweek = log1p(drinkpweek)) %>% # logtransform drinkpweek w/ 1p to account for 0s
+  mutate(AD12.Dementia.outcome = fct_recode(# create dementia dummy variable
+    .f = AD12,
+    NULL = "CIND")) %>% 
+  mutate(AD12.CIND.outcome = fct_recode(# create CIND dummy variable
+    .f = AD12,
+    NULL = "Dementia")) %>% 
+  mutate(AD12.binary = case_when(
+    AD12 == "Dementia" ~ TRUE,
+    AD12 == "CIND" ~ TRUE,
+    AD12 == "Normal" ~ FALSE
+  )) %>%
+  mutate(GENDER = factor_gender(GENDER)) %>%
+  # Recode race not reported to missing
+  mutate(RACE = ifelse(
+    RACE == 0,
+    NA,
+    RACE
+  )) %>%
+  mutate(RACE = factor_race(RACE)) %>%
+  mutate(DEGREE = factor_degree(DEGREE)) %>%
+  mutate(DEGREE =
+    case_when(
+      DEGREE == "No degree" ~ "No degree",
+      DEGREE %in% c("GED", "High School Diploma", "Degree Unknown/Some college") ~ "High school/GED/Some college",
+      DEGREE %in% c("Two year college degree", "Four year college degree", "Master degree", "Professional Degree") ~ "Two year college degree or greater"
+    )
+  ) %>%
+  #mutate(DEGREE = ordered(DEGREE, levels = c("No degree", "High school/GED/Some college", "Two year college degree or greater"))) %>%
+  rowwise() %>%
+  # Define an everdrinks variable 
+  mutate(everdrinks = case_when(
+    # If all RAND currently drinks variables are missing, assign missing, otherwise, add the number of waves responded with currently drinks
+    is.na(R3DRINK) & is.na(R4DRINK) & is.na(R5DRINK) & is.na(R6DRINK) & is.na(R7DRINK) & is.na(R8DRINK) & is.na(R9DRINK) & is.na(R10DRINK) & is.na(R11DRINK) == TRUE ~ NA_real_,
+    TRUE ~ sum(c_across(matches("R\\d+DRINK$")), na.rm = TRUE)
+  )) %>%
+  # Define an everdrank variable, which is simply an indicator variable for the above drinking variable
+  mutate(everdrank = case_when(
+    everdrinks > 0 ~ 1,
+    everdrinks == 0 ~ 0,
+    TRUE ~ NA_real_
+  )) %>%
+  # Undo the row-wise grouping
+  ungroup() %>%
+  mutate(R11DRINKD = as.numeric(R11DRINKD)) %>%
+  mutate(R11DRINKN = as.numeric(R11DRINKN)) %>%
+  mutate(APOE012 = factor_APOE_012(APOE012)) %>%
+  # Combining ancestry pcs by race for inclusion/exclusion purposes
+  mutate(AncestryPC_1_5A = case_when( 
+    RACE == "Non-Hispanic White, European ancestry" ~ eaPC1_5A,
+    RACE == "Non-Hispanic Black, African ancestry" ~ AAPC1_5A
+  )) %>%
+  mutate(AncestryPC_1_5B = case_when(
+    RACE == "Non-Hispanic White, European ancestry" ~ eaPC1_5B,
+    RACE == "Non-Hispanic Black, African ancestry" ~ AAPC1_5B
+  )) %>%
+  mutate(AncestryPC_1_5C = case_when(
+    RACE == "Non-Hispanic White, European ancestry" ~ eaPC1_5C,
+    RACE == "Non-Hispanic Black, African ancestry" ~ AAPC1_5C
+  )) %>%
+  mutate(AncestryPC_1_5D = case_when(
+    RACE == "Non-Hispanic White, European ancestry" ~ eaPC1_5D,
+    RACE == "Non-Hispanic Black, African ancestry" ~ AAPC1_5D
+  )) %>%
+  mutate(AncestryPC_1_5E = case_when(
+    RACE == "Non-Hispanic White, European ancestry" ~ eaPC1_5E,
+    RACE == "Non-Hispanic Black, African ancestry" ~ AAPC1_5E
+  )) %>%
+  mutate(PGS4_DPW_GSCAN19 = case_when(
+    RACE == "Non-Hispanic White, European ancestry" ~ EA_PGS4_DPW_GSCAN19,
+    RACE == "Non-Hispanic Black, African ancestry" ~ AA_PGS4_DPW_GSCAN19
+  )) %>%
+  # Fix previous coding error
+  mutate(PGS4_DPW_GSCAN19 = -PGS4_DPW_GSCAN19) %>%
+  mutate(R11SMOKEV = factor_ever_smoke(R11SMOKEV)) %>%
+  # Recode marital status not reported to missing
+  mutate(NMARST = ifelse(
+    NMARST == 5,
+    NA,
+    NMARST
+  )) %>%
+  mutate(NMARST = factor_marital_status(NMARST)) %>%
+  mutate(R11SAYRET = factor_says_retired(R11SAYRET)) %>%
+  mutate(across(.cols = everything(), ~ zap_label(.x))) %>%   # Remove labels, only necessary if using .sas7bdat
+  mutate(across(.cols = everything(), ~ zap_formats(.x)))     # Remove formats, only necessary if using .sas7bdat
+```
+
+### Aside for descriptives pull
+```{r}
+hrs %>% filter(NIWWAVE == T) %>% filter(R11DRINK == 1) %>% filter(RACE == "Non-Hispanic White, European ancestry") %>% dim
+hrs %>% filter(NIWWAVE == T) %>% filter(R11DRINK == 1) %>% filter(RACE == "Non-Hispanic White, European ancestry") %>% pull(NAGE) %>% mean
+hrs.current.drinkers.ea <- hrs %>% filter(NIWWAVE == T) %>% filter(R11DRINK == 1) %>% filter(RACE == "Non-Hispanic White, European ancestry") #%>% pull(drinkpweek) %>% mean(na.rm = TRUE)
+hrs.current.drinkers.ea$NAGE %>% mean
+```
+
+```{r}
+# Formatted democogwide merged on the cluster; only pull cross-specific information
+cross <- readRDS(here("data", "2022-04-24.democogwide.1smr.gscan.dpw.rda"))
+cross <- cross %>% dplyr::select(HHIDPN, local_id)
+
+# List of 71 independent SNPs from Liu according to 2SMR standards
+snp <- readRDS(here("data", "analytic", "liu_independent_instruments.rda")) %>%
+  filter(!(SNP %in% c("rs74664784", "rs561222871")))
+#### List of the 59 SNPs used in the 2SMR analysis (because only 59 of 99 overlapped with LOAD Kunkle et al. 2019) - OUTMODED
+#snp <- readRDS(here("data", "analytic", "2smr_snp_hits_05_23_2022.rda"))
+
+
+hrs <- left_join(hrs, cross)
+
+# HRS genetic data processed on the cluster
+vcf <- read.vcfR(here("data", "gscan_chr_hits", "gscan_hits_vcf", "gscan.hits.imputed.geno.vcf"), verbose = T)
+# Liu et al. 2019 LogDrinksPerWeek PGS weights
+dpw <- read_excel(here("data", "gscan_dpw_full.xlsx"))
+
+cross
+```
+
+```{r}
+vcf_field_names(vcf)
+```
+
+vcf.df$gt is of length 1,872,684 (99 variants x 18,916 individuals)
+```{r}
+vcf.df <- vcfR2tidy(vcf)
+```
+
+All gscan.dpw samples passed imputation filtering criteria
+```{r}
+# What is FILTER?
+vcf.df$fix$FILTER %>% factor %>% summary
+# What is QUAL?
+vcf.df$fix$QUAL %>% factor %>% summary
+# Majority of SNPs were imputed (68 of 99)
+vcf.df$fix$IMPUTED %>% factor %>% summary
+# 31 SNPs were imputed and genoytped
+vcf.df$fix$TYPED %>% factor %>% summary
+# All SNPs were imputed and genotyped or just imputed
+vcf.df$fix$TYPED_ONLY %>% factor %>% summary
+```
+
+```{r}
+liu <- read_csv(here("data", "analytic", "liu_drinkpwk_hits.csv"))
+```
+
+Pull SNP-wise metadata, joined with Liu supplemental data for rsID annotation
+```{r}
+snp.wise <- vcf.df$fix %>%
+  rename("Chr" = CHROM, "Position" = POS) %>%
+  mutate(Chr = as.numeric(Chr)) %>%
+  left_join(liu %>% dplyr::select(Chr, Position, rsID))
+```
+
+```{r}
+ggplot(data = snp.wise,
+       mapping = aes(x = R2)) +
+  geom_histogram() +
+  theme_bw() +
+  ggtitle("R^2")
+
+ggplot(data = snp.wise,
+       mapping = aes(x = ER2)) +
+  geom_histogram() +
+  theme_bw() +
+  ggtitle("ER^2")
+```
+
+4 SNPs with less than 2% MAF
+```{r}
+ggplot(data = snp.wise,
+       mapping = aes(x = MAF)) +
+  geom_histogram() +
+  theme_bw() +
+  ggtitle("MAF")
+(vcf.df$fix$MAF < 0.02) %>% summary
+table((vcf.df$fix$MAF < 0.02), vcf.df$fix$TYPED)
+snp.wise %>% filter(MAF < 0.02) %>% pull(rsID)
+```
+
+Could a genotyped variant have a MAF > 2%, but have < 2% imputed MAF?
+```{r}
+snp.wise %>%
+  filter(MAF < 0.02)
+snp.wise.maf.02 <- snp.wise %>%
+  filter(MAF < 0.02) %>%
+  pull(rsID)
+```
+
+```{r}
+snp.wise %>%
+  filter(MAF < 0.05)
+```
+
+gt_DS is estimated allele dosage
+```{r}
+vcf.ds <- vcfR2tidy(vcf, single_frame = TRUE, format_fields = "DS", verbose = T)
+```
+
+Transform genotype dosages to wide format for merging with HRS data
+
+```{r}
+geno.df <- readRDS(here("data", "geno_df_2023-02-17.rda"))
+
+# Previous analysis freeze on 8/28/2022 using all 99 SNPs; as of 12/2022, moving to the 71 SNPs only that meet the more stringent filtering threshold for 2SMR
+#geno.df <- readRDS(here("data", "geno_df_2022-08-28.rda"))
+
+# Previous use
+#geno.df <-
+#  vcf.ds$dat %>%
+#  dplyr::select(Indiv, ID, gt_DS) %>%
+#  pivot_wider(names_from = ID, values_from = gt_DS) %>%
+#  rename(local_id = Indiv)
+```
+
+Updated with rsID and the 71 higher independence threshold SNPs, less the 1 w/ MAF <2%; 70 analytic instruments
+```{r, eval = F}
+geno.df <-
+  vcf.ds$dat %>% 
+  rename("Chr" = CHROM, "Position" = POS) %>%
+  mutate(Chr = as.numeric(Chr)) %>%
+  left_join(liu %>% dplyr::select(Chr, Position, rsID)) %>%
+  dplyr::select(Indiv, rsID, gt_DS) %>%
+  # Filter to the 71 SNPs
+  filter(rsID %in% snp$SNP & !(rsID %in% snp.wise.maf.02)) %>%
+  pivot_wider(names_from = rsID, values_from = gt_DS) %>%
+  rename(local_id = Indiv)
+#saveRDS(geno.df, here("data", paste0("geno_df_", Sys.Date(),".rda")))
+```
+
+```{r}
+colnames(geno.df)
+
+dat.all <- left_join(hrs, geno.df)
+```
+
+## Construct a PGS with dosage*beta, followed by standardization within ancestry, with the 2SMR selected variants
+If flip the GWAS beta, take 2 - dosage as new dosage, so that all PGS corresponds to increased phenotype
+```{r}
+# Add ID in the form of chr:location:ref:alt to dpw to merge with hrs vcf data
+dpw.info <-
+  dpw %>%
+  mutate(ID = paste(Chr, Position, `Reference Allele`, `Alternate Allele`, sep = ":"))
+```
+
+Calculate per SNP PGS
+```{r}
+dat.pgs.j <- 
+  
+  # Start with wide format id, followed by 99 SNP variants from DPW
+  geno.df %>%
+  
+  # Pivot the 71 (previously all 99 hits) SNP variants to long format, multiple ID entries for each SNP now
+  pivot_longer(cols = matches("rs[0-9]+"),
+               names_to = "rsID",
+               values_to = "dosage") %>%
+  
+  # Previous implementation by chr:pos ID
+  #pivot_longer(cols = matches(":\\D:\\D"),
+  #             names_to = "ID",
+  #             values_to = "dosage") %>%
+  
+  # Merge GSCAN dpw snp results
+  left_join(dpw.info %>% dplyr::select(rsID, Beta)) %>%
+  
+  # Option to change different SNP subsets we want to use for the PGS
+  #filter(ID %in% dpw.hits$ID) %>%
+  
+  # Flip dosage if Beta is negative, so higher PGS means higher phenotype
+  mutate(dosage.calc = if_else(condition = Beta < 0,
+                          true = 2 - dosage,
+                          false = dosage)) %>%
+  
+  # Get absolute value of Beta for PGS calculation
+  mutate(Beta.calc = abs(Beta)) %>%
+  
+  # Calculate the polygenic score for gene j within individual
+  mutate(score.j = dosage.calc*Beta.calc)
+```
+
+Sum over SNPs
+```{r}
+race.data.merge <- dat.all %>% dplyr::select(local_id, RACE)
+
+dat.pgs.i <- 
+  
+  # Start with the long individual-SNP level dataframe
+  dat.pgs.j %>%
+  
+  # Group by individual
+  group_by(local_id) %>%
+  
+  # Sum across the SNPs for that individual
+  summarise(pgs = sum(score.j)) %>%
+  
+  # Merge IDs with RACE metadata
+  left_join(race.data.merge) %>%
+  
+  # Group by ancestry for normalization
+  group_by(RACE) %>%
+  
+  # Scale returns attributes without indexing
+  mutate(pgs.norm = scale(pgs)[,1])
+```
+
+Merge normalized PGS with HRS data
+```{r}
+dat.all.pgs <-
+  dat.all %>%
+  left_join(dat.pgs.i %>% dplyr::select(local_id, pgs, pgs.norm))
+```
+RACE variable factor levels:
+
+1. "Non-Hispanic White, European ancestry"
+2. "Non-Hispanic Black, African ancestry"
+3. "Other"
+```{r}
+dat.all.pgs %>% filter(RACE == "Non-Hispanic White, European ancestry") %>% pull(pgs.norm) %>% hist(main = "Non-Hispanic White, European ancestry")
+dat.all.pgs %>% filter(RACE == "Non-Hispanic Black, African ancestry") %>% pull(pgs.norm) %>% hist(main = "Non-Hispanic Black, African ancestry")
+```
+
+## Covariates for consideration
+Create a vector of variables for bivariate consideration and, separately, covariates. Order matters for gtsummary
+```{r}
+aa.pgs.covariates <- c("AAPC1_5A", "AAPC1_5B", "AAPC1_5C", "AAPC1_5D", "AAPC1_5E", "AA_PGS4_DPW_GSCAN19")
+ea.pgs.covariates <- c("eaPC1_5A", "eaPC1_5B", "eaPC1_5C", "eaPC1_5D", "eaPC1_5E", "EA_PGS4_DPW_GSCAN19")
+combined.pgs.covariates <- c("AncestryPC_1_5A", "AncestryPC_1_5B", "AncestryPC_1_5C", "AncestryPC_1_5D", "AncestryPC_1_5E", "PGS4_DPW_GSCAN19")
+
+univariates = c("NAGE", "GENDER", "RACE", "DEGREE", "AD12", "drinkpweek",
+                "R11DRINK", "R11DRINKD", "R11DRINKN", "APOE012",
+                "R11SMOKEV", "NMARST", "R11CESD", "R11CONDE", "R11SAYRET",
+                "EA_PGS4_DPW_GSCAN19", "AD12.CIND.outcome", "AD12.Dementia.outcome") #"drinkpweek.cut"
+bivariates = c("NAGE", "GENDER", "RACE", "DEGREE", "drinkpweek", "PGS4_DPW_GSCAN19",
+                "R11DRINK", "R11DRINKD", "R11DRINKN", "APOE012",
+                "R11SMOKEV", "NMARST", "R11CESD", "R11CONDE", "R11SAYRET")
+covariates = c("NAGE", "GENDER", "RACE", "DEGREE", "drinkpweek", "logdrinkpweek", "PGS4_DPW_GSCAN19",
+                "APOE012", "R11SMOKEV", "NMARST", "R11CESD", "R11CONDE", "R11SAYRET")
+```
+
+Code chunk to create categorized exposure category if desired
+```{r, eval = F, include = F}
+  mutate(drinkpweek.cut = factor(
+    case_when(
+      drinkpweek == 0 ~ "Never drinker",
+      drinkpweek <= median(dat$drinkpweek[dat$drinkpweek!=0]) ~ "Low",
+      drinkpweek > median(dat$drinkpweek[dat$drinkpweek!=0]) ~ "High"
+  ))) %>%
+```
+
+```{r}
+#saveRDS(dat.all.pgs, here("data", paste0(Sys.Date(), "_gscan_dpw_variants.rda")))
+```
+
+Load data
+```{r}
+# Less the 1 SNPs w/ MAF < 2%
+dat.all.pgs <- readRDS(here("data", "2023-02-17_gscan_dpw_variants.rda"))
+
+# Previous freeze w/ all 71 independent hits
+#dat.all.pgs <- readRDS(here("data", "2022-12-09_gscan_dpw_variants.rda"))
+
+# Previous freeze w/ all 99 variants
+#dat.all.pgs <- readRDS(here("data", "2022-09-18_gscan_dpw_variants.rda"))
+```
+
+```{r}
+dat.all.pgs %>% filter(RACE == "Non-Hispanic White, European ancestry") %>%
+  filter(GENETICS06 == T | GENETICS08 == T | GENETICS10 == T | GENETICS12 == T) %>%
+  filter(RACE == "Non-Hispanic White, European ancestry") %>%
+  dplyr::select(all_of(c("local_id", "eaPC1_5A", "EA_PGS4_DPW_GSCAN19", "PGS4_DPW_GSCAN19", "APOE012", colnames(geno.df)))) %>%
+  skim()
+
+dat.all.pgs %>%
+  filter(GENETICS06 == T | GENETICS08 == T | GENETICS10 == T | GENETICS12 == T) %>%
+  filter(RACE == "Non-Hispanic White, European ancestry") %>%
+  drop_na(eaPC1_5A) %>%
+  dplyr::select(all_of(c("local_id", "eaPC1_5A", "EA_PGS4_DPW_GSCAN19", "PGS4_DPW_GSCAN19", "APOE012", colnames(geno.df)))) %>%
+  skim()
+```
+
+```{r}
+dat.all.pgs %>% filter(RACE == "Non-Hispanic White, European ancestry") %>%
+  filter(GENETICS06 == T | GENETICS08 == T | GENETICS10 == T) %>%
+  filter(RACE == "Non-Hispanic White, European ancestry") %>%
+  dplyr::select(all_of(c("eaPC1_5A", "EA_PGS4_DPW_GSCAN19", "PGS4_DPW_GSCAN19", "APOE012", colnames(geno.df)))) %>%
+  skim()
+
+dat.all.pgs %>%
+  filter(GENETICS06 == T | GENETICS08 == T | GENETICS10 == T) %>%
+  filter(RACE == "Non-Hispanic White, European ancestry") %>%
+  drop_na(eaPC1_5A) %>%
+  dplyr::select(all_of(c("eaPC1_5A", "EA_PGS4_DPW_GSCAN19", "PGS4_DPW_GSCAN19", "APOE012", colnames(geno.df)))) %>%
+  skim()
+```
+
+```{r}
+dat.all.pgs %>%
+  filter(GENETICS06 == T | GENETICS08 == T | GENETICS10 == T | GENETICS12 == T) %>%
+  filter(RACE == "Non-Hispanic White, European ancestry") %>%
+  dplyr::select(all_of(c("local_id", "eaPC1_5A", "EA_PGS4_DPW_GSCAN19", "PGS4_DPW_GSCAN19", "APOE012", colnames(geno.df)))) %>%
+  skim()
+
+dat.all.pgs %>%
+  filter(GENETICS06 == T | GENETICS08 == T | GENETICS10 == T | GENETICS12 == T) %>%
+  filter(RACE == "Non-Hispanic White, European ancestry") %>%
+  drop_na(eaPC1_5A) %>%
+  dplyr::select(all_of(c("local_id", "eaPC1_5A", "EA_PGS4_DPW_GSCAN19", "PGS4_DPW_GSCAN19", "APOE012", colnames(geno.df)))) %>%
+  skim()
+```
+
+```{r}
+dat.all.pgs  %>%
+  filter(GENETICS06 == T | GENETICS08 == T | GENETICS10 == T) %>%
+  filter(RACE == "Non-Hispanic Black, African ancestry") %>%
+  dplyr::select(all_of(c("AAPC1_5A", "AA_PGS4_DPW_GSCAN19", "PGS4_DPW_GSCAN19", "APOE012", colnames(geno.df)))) %>%
+  skim()
+
+dat.all.pgs %>%
+  filter(GENETICS06 == T | GENETICS08 == T | GENETICS10 == T) %>%
+  filter(RACE == "Non-Hispanic Black, African ancestry") %>%
+  drop_na(AAPC1_5A) %>%
+  dplyr::select(all_of(c("AAPC1_5A", "AA_PGS4_DPW_GSCAN19", "PGS4_DPW_GSCAN19", "APOE012", colnames(geno.df)))) %>%
+  skim()
+```
+
+Missingness by genetics variables in 2012 wave participants
+```{r}
+dat.all.pgs %>% dplyr::select(all_of(c(colnames(geno.df), "PGS4_DPW_GSCAN19", "APOE012"))) %>% skim() #%>% View
+
+dat.all.pgs %>%
+  filter(GENETICS06 == T | GENETICS08 == T | GENETICS10 == T) %>%
+  dplyr::select(all_of(c(colnames(geno.df), "PGS4_DPW_GSCAN19", "APOE012", "AAPC1_5A", "eaPC1_5A", "AA_PGS4_DPW_GSCAN19", "EA_PGS4_DPW_GSCAN19"))) %>%
+  skim() #%>%
+  #View
+```
+
+THESE NUMBERS MAY BE OUTDATED w/ SWITCH TO 70 variants
+
+
+3-5 individuals per SNP missing
+
+PGS4_DPW_GSCAN19 missing 2,430 of 21,964
+PGS4_DPW_GSCAN19 missingness checks out
+11736/0.1493186
+78597.04
+11736/(1-0.1493186)
+13796
+4490/(1-0.6745433)
+13796
+(0.1493186+0.6745433)*13796
+11366
+13796-11366
+2430
+
+15,620 here compared to 15,708 listed in the QC report
+```{r}
+dat.all.pgs %>%
+  filter(GENETICS06 == T | GENETICS08 == T | GENETICS10 == T) %>% dim
+```
+
+```{r}
+dat.all.pgs %>%
+  filter(GENETICS06 == T | GENETICS08 == T | GENETICS10 == T) %>%
+  filter(RACE == "Non-Hispanic White, European ancestry") %>%
+  dplyr::select(eaPC1_5A) %>%
+  skim
+
+dat.all.pgs %>%
+  filter(GENETICS06 == T | GENETICS08 == T | GENETICS10 == T) %>%
+  filter(RACE == "Non-Hispanic Black, African ancestry") %>%
+  dplyr::select(AAPC1_5A) %>%
+  skim
+```
+
+## Inclusion/exclusion
+
+```{r}
+# TODO double-check this
+# wave.2012 %>% filter(is.na(pgs.norm)) %>% dplyr::select(HHIDPN, local_id, PGS4_DPW_GSCAN19)
+
+# 21,964
+wave.2012 <- dat.all.pgs %>%
+  filter(NIWWAVE == T)
+
+wave.2012.count <- nrow(wave.2012)
+wave.2012.count
+
+wave <- glue("Health and Retirement Study - 2012 Wave
+          n = {wave.2012.count}")
+
+# 13,796
+genetic.subsample <- 
+  wave.2012 %>%
+  filter(GENETICS06 == T | GENETICS08 == T | GENETICS10 == T) #%>% #|  GENETICS12 == T)
+genetic.subsample.count <- nrow(genetic.subsample)
+genetic.subsample.count
+
+genotyped <- glue("Genetic subsample
+          n = {genetic.subsample.count}")
+genotyped.excluded <- glue("Not genotyped
+          n = {wave.2012.count - genetic.subsample.count} excluded")
+
+### Start here with complete genetic information stratified by ancestry
+# 9,306
+ancestry.ea <- genetic.subsample %>%
+  filter(!is.na(eaPC1_5A))
+ancestry.ea.count <- nrow(ancestry.ea)
+ancestry.ea.count
+
+# 9,299
+ancestry.ea.snp <-
+ ancestry.ea %>%
+  drop_na(c(colnames(geno.df)))
+ancestry.ea.snp.count <- nrow(ancestry.ea.snp)
+ancestry.ea.snp.count
+
+# 2,060
+ancestry.aa <- genetic.subsample %>%
+  filter(!is.na(AAPC1_5A))
+ancestry.aa.count <- nrow(ancestry.aa)
+ancestry.aa.count
+
+# 2,058
+ancestry.aa.snp <-
+ ancestry.aa %>%
+  drop_na(c(colnames(geno.df)))
+ancestry.aa.snp.count <- nrow(ancestry.aa.snp)
+ancestry.aa.snp.count
+
+ancestry.excluded <- glue("Neither African nor European ancestry
+          n = {genetic.subsample.count - ancestry.ea.count - ancestry.aa.count} excluded")
+
+ancestry.ea.glue <- glue("European ancestry
+          n = {ancestry.ea.count}")
+ancestry.aa.glue <- glue("African ancestry
+          n = {ancestry.aa.count}")
+
+genetic.ea <- glue("Complete genetic information
+                   n = {ancestry.ea.snp.count}")
+genetic.aa <- glue("Complete genetic information
+                   n = {ancestry.aa.snp.count}")
+
+genetic.ea.excluded <- glue("Missing complete SNP data
+          n = {ancestry.ea.count - ancestry.ea.snp.count} excluded")
+
+genetic.aa.excluded <- glue("Missing complete SNP data
+          n = {ancestry.aa.count - ancestry.aa.snp.count} excluded")
+
+### OUTCOME
+# 8,735
+outcome.ea <-
+  ancestry.ea.snp %>%
+  filter(!is.na(AD12))
+outcome.count.ea <- nrow(outcome.ea)
+outcome.count.ea
+
+# 1,938
+outcome.aa <-
+  ancestry.aa.snp %>%
+  filter(!is.na(AD12))
+outcome.count.aa <- nrow(outcome.aa)
+outcome.count.aa
+
+outcome.ea.glue <- glue("Complete outcome information
+                   n = {outcome.count.ea}")
+outcome.aa.glue <- glue("Complete outcome information
+                   n = {outcome.count.aa}")
+
+outcome.ea.excluded.glue <- glue("Missing 2012 cognitive function
+          n = {ancestry.ea.snp.count - outcome.count.ea} excluded")
+
+outcome.aa.excluded.glue <- glue("Missing 2012 cognitive function
+          n = {ancestry.aa.snp.count - outcome.count.aa} excluded")
+
+### EXPOSURE
+# 8.709
+exposure.ea <-
+  outcome.ea %>%
+  filter(!is.na(drinkpweek) | drinkpweek == 0)
+exposure.count.ea <- nrow(exposure.ea)
+exposure.count.ea
+
+# 1,926
+exposure.aa <-
+  outcome.aa %>%
+  filter(!is.na(drinkpweek) | drinkpweek == 0)
+exposure.count.aa <- nrow(exposure.aa)
+exposure.count.aa
+
+exposure.ea.glue <- glue("Complete exposure information
+                   n = {exposure.count.ea}")
+  
+exposure.ea.excluded.glue <- glue("Missing 2012 alcohol consumption
+          n = {outcome.count.ea - exposure.count.ea} excluded")
+  
+exposure.aa.glue <- glue("Complete exposure information
+                   n = {exposure.count.aa}")
+
+exposure.aa.excluded.glue <- glue("Missing 2012 alcohol consumption
+          n = {outcome.count.aa - exposure.count.aa} excluded")
+
+### COVARIATES
+# 8,328
+complete.ea <-
+  exposure.ea %>%
+  drop_na(any_of(c(covariates)))
+complete.count.ea <- nrow(complete.ea)
+complete.count.ea
+
+# 1,842
+complete.aa <-
+  exposure.aa %>%
+  drop_na(any_of(c(covariates)))
+complete.count.aa <- nrow(complete.aa)
+complete.count.aa
+
+complete.ea.glue <- glue("European ancestry analytic sample
+                   n = {complete.count.ea}")
+  
+complete.ea.excluded.glue <- glue("Missing any 2012 covariate information
+          n = {exposure.count.ea - complete.count.ea} excluded")
+  
+complete.aa.glue <- glue("African ancestry analytic sample
+                   n = {complete.count.aa}")
+
+complete.aa.excluded.glue <- glue("Missing any 2012 covariate information
+          n = {exposure.count.aa - complete.count.aa} excluded")
+```
+
+Latest version - written with indexing, one index for each graph level
+```{r}
+graph <- grViz("
+digraph cohort_flow_chart {
+node [fontname = Helvetica, fontsize = 12, shape = box, width = 4]
+
+ancestry_ea[label = '@@1-1']
+ancestry_aa[label = '@@1-2']
+
+blank_snp_exclude_ea[label = '', width = 0.01, height = 0.01]
+genetic_ea_excluded[label = '@@2-2']
+genetic_ea[label = '@@2-1']
+blank_snp_exclude_aa[label = '', width = 0.01, height = 0.01]
+genetic_aa_excluded[label = '@@2-4']
+genetic_aa[label = '@@2-3']
+
+outcome_ea[label = '@@3-1']
+outcome_ea_blank[label = '', width = 0.01, height = 0.01]
+outcome_ea_excluded[label = '@@3-2']
+outcome_aa[label = '@@3-3']
+outcome_aa_blank[label = '', width = 0.01, height = 0.01]
+outcome_aa_excluded[label = '@@3-4']
+
+exposure_ea[label = '@@4-1']
+exposure_ea_blank[label = '', width = 0.01, height = 0.01]
+exposure_ea_excluded[label = '@@4-2']
+exposure_aa[label = '@@4-3']
+exposure_aa_blank[label = '', width = 0.01, height = 0.01]
+exposure_aa_excluded[label = '@@4-4']
+
+complete_ea[label = '@@5-1']
+complete_ea_blank[label = '', width = 0.01, height = 0.01]
+complete_ea_excluded[label = '@@5-2']
+complete_aa[label = '@@5-3']
+complete_aa_blank[label = '', width = 0.01, height = 0.01]
+complete_aa_excluded[label = '@@5-4']
+
+{ rank = same; ancestry_ea ancestry_aa}
+{ rank = same; blank_snp_exclude_ea genetic_ea_excluded blank_snp_exclude_aa genetic_aa_excluded}
+{ rank = same; genetic_ea genetic_aa}
+{ rank = same; outcome_ea outcome_aa}
+{ rank = same; outcome_ea_blank outcome_ea_excluded outcome_aa_blank outcome_aa_excluded}
+{ rank = same; exposure_ea exposure_aa}
+{ rank = same; exposure_ea_blank exposure_ea_excluded exposure_aa_blank exposure_aa_excluded}
+{ rank = same; complete_ea complete_aa}
+{ rank = same; complete_ea_blank complete_ea_excluded complete_aa_blank complete_aa_excluded}
+
+ancestry_ea -> blank_snp_exclude_ea [ dir = none ];
+blank_snp_exclude_ea -> genetic_ea_excluded [ minlen = 1 ];
+blank_snp_exclude_ea -> genetic_ea;
+
+ancestry_aa -> blank_snp_exclude_aa [ dir = none ];
+blank_snp_exclude_aa -> genetic_aa_excluded [ minlen = 1 ];
+blank_snp_exclude_aa -> genetic_aa;
+
+genetic_ea -> outcome_ea_blank [ dir = none ];
+outcome_ea_blank -> outcome_ea_excluded [ minlen = 1 ];
+outcome_ea_blank -> outcome_ea;
+
+genetic_aa -> outcome_aa_blank [ dir = none ];
+outcome_aa_blank -> outcome_aa_excluded [ minlen = 1 ];
+outcome_aa_blank -> outcome_aa;
+
+outcome_ea -> exposure_ea_blank [ dir = none ];
+exposure_ea_blank -> exposure_ea_excluded [ minlen = 1 ];
+exposure_ea_blank -> exposure_ea;
+
+outcome_aa -> exposure_aa_blank [ dir = none ];
+exposure_aa_blank -> exposure_aa_excluded [ minlen = 1 ];
+exposure_aa_blank -> exposure_aa
+
+exposure_ea -> complete_ea_blank [ dir = none ];
+complete_ea_blank -> complete_ea_excluded [ minlen = 1 ];
+complete_ea_blank -> complete_ea;
+
+exposure_aa -> complete_aa_blank [ dir = none ];
+complete_aa_blank -> complete_aa_excluded [ minlen = 1 ];
+complete_aa_blank -> complete_aa
+
+}
+
+[1]: c(ancestry.ea.glue, ancestry.aa.glue)
+[2]: c(genetic.ea, genetic.ea.excluded, genetic.aa, genetic.aa.excluded)
+[3]: c(outcome.ea.glue, outcome.ea.excluded.glue, outcome.aa.glue, outcome.aa.excluded.glue)
+[4]: c(exposure.ea.glue, exposure.ea.excluded.glue, exposure.aa.glue, exposure.aa.excluded.glue)
+[5]: c(complete.ea.glue, complete.ea.excluded.glue, complete.aa.glue, complete.aa.excluded.glue)
+")
+```
+
+```{r, eval = F}
+graph %>% export_svg() %>% charToRaw %>% rsvg_pdf(here("results", paste0("wave2012_incl_excl_", Sys.Date(), ".pdf")))
+```
+
+```{r, eval = F, include = F}
+# Renormalize pgs after inclusion/exclusion
+#TODO check with Erin; I don't think this is a good idea; not running for now
+complete.ea <- 
+  complete.ea %>%
+  mutate(pgs.norm = scale(pgs)[,1])
+
+complete.aa <- 
+  complete.aa %>%
+  mutate(pgs.norm = scale(pgs)[,1])
+```
+
+```{r}
+complete <- rbind(complete.ea, complete.aa) %>%
+  mutate(RACE = droplevels(RACE))
+```
+
+```{r}
+#saveRDS(complete, here("data", "analytic", paste0(Sys.Date(), ".gscan.dpw.1smr.xs.rda")))
+```
+
+Also save a dataset of that starts at the top of the inclusion/exclusion diagram (genetics-confirmed AA and EA)
+```{r}
+genetics_confirmed_2012 <- rbind(ancestry.ea, ancestry.aa) %>%
+  mutate(RACE = droplevels(RACE))
+#saveRDS(genetics_confirmed_2012, here("data", "analytic",paste0( "genetics_confirmed_2012_", Sys.Date(), ".rda")))
+dim(ancestry.ea)
+dim(ancestry.aa)
+```
+
+```{r}
+table(complete.ea$RACE, complete.ea$AD12)
+table(complete.aa$RACE, complete.aa$AD12)
+```
+
+```{r}
+lm(drinkpweek ~ PGS4_DPW_GSCAN19, data = complete.ea) %>% tidy
+lm(drinkpweek ~ PGS4_DPW_GSCAN19, data = complete.ea) %>% glance
+lm(drinkpweek ~ PGS4_DPW_GSCAN19, data = complete.aa) %>% tidy
+lm(drinkpweek ~ PGS4_DPW_GSCAN19, data = complete.aa) %>% glance
+```
+
+## Inclusion/Exclusion Current drinkers only
+```{r}
+# 21,964
+wave.2012 <- dat.all.pgs %>%
+  filter(NIWWAVE == T)
+
+wave.2012.count <- nrow(wave.2012)
+wave.2012.count
+
+wave <- glue("Health and Retirement Study - 2012 Wave
+          n = {wave.2012.count}")
+
+# 13,796
+genetic.subsample <- 
+  wave.2012 %>%
+  filter(GENETICS06 == T | GENETICS08 == T | GENETICS10 == T) #%>% #|  GENETICS12 == T)
+genetic.subsample.count <- nrow(genetic.subsample)
+genetic.subsample.count
+
+genotyped <- glue("Genetic subsample
+          n = {genetic.subsample.count}")
+genotyped.excluded <- glue("Not genotyped
+          n = {wave.2012.count - genetic.subsample.count} excluded")
+
+### Start here with complete genetic information stratified by ancestry
+# 9,306
+ancestry.ea <- genetic.subsample %>%
+  filter(!is.na(eaPC1_5A))
+ancestry.ea.count <- nrow(ancestry.ea)
+ancestry.ea.count
+
+# 9,299
+ancestry.ea.snp <-
+ ancestry.ea %>%
+  drop_na(c(colnames(geno.df)))
+ancestry.ea.snp.count <- nrow(ancestry.ea.snp)
+ancestry.ea.snp.count
+
+# 2,060
+ancestry.aa <- genetic.subsample %>%
+  filter(!is.na(AAPC1_5A))
+ancestry.aa.count <- nrow(ancestry.aa)
+ancestry.aa.count
+
+# 2,058
+ancestry.aa.snp <-
+ ancestry.aa %>%
+  drop_na(c(colnames(geno.df)))
+ancestry.aa.snp.count <- nrow(ancestry.aa.snp)
+ancestry.aa.snp.count
+
+ancestry.excluded <- glue("Neither African nor European ancestry
+          n = {genetic.subsample.count - ancestry.ea.count - ancestry.aa.count} excluded")
+
+ancestry.ea.glue <- glue("European ancestry
+          n = {ancestry.ea.count}")
+ancestry.aa.glue <- glue("African ancestry
+          n = {ancestry.aa.count}")
+
+genetic.ea <- glue("Complete genetic information
+                   n = {ancestry.ea.snp.count}")
+genetic.aa <- glue("Complete genetic information
+                   n = {ancestry.aa.snp.count}")
+
+genetic.ea.excluded <- glue("Missing complete SNP data
+          n = {ancestry.ea.count - ancestry.ea.snp.count} excluded")
+
+genetic.aa.excluded <- glue("Missing complete SNP data
+          n = {ancestry.aa.count - ancestry.aa.snp.count} excluded")
+
+### OUTCOME
+# 8,735
+outcome.ea <-
+  ancestry.ea.snp %>%
+  filter(!is.na(AD12))
+outcome.count.ea <- nrow(outcome.ea)
+outcome.count.ea
+
+# 1,938
+outcome.aa <-
+  ancestry.aa.snp %>%
+  filter(!is.na(AD12))
+outcome.count.aa <- nrow(outcome.aa)
+outcome.count.aa
+
+outcome.ea.glue <- glue("Complete outcome information
+                   n = {outcome.count.ea}")
+outcome.aa.glue <- glue("Complete outcome information
+                   n = {outcome.count.aa}")
+
+outcome.ea.excluded.glue <- glue("Missing 2012 cognitive function
+          n = {ancestry.ea.snp.count - outcome.count.ea} excluded")
+
+outcome.aa.excluded.glue <- glue("Missing 2012 cognitive function
+          n = {ancestry.aa.snp.count - outcome.count.aa} excluded")
+
+### EXPOSURE
+# 8,709
+exposure.ea <-
+  outcome.ea %>%
+  filter(!is.na(drinkpweek))
+exposure.count.ea <- nrow(exposure.ea)
+exposure.count.ea
+
+# 1,926
+exposure.aa <-
+  outcome.aa %>%
+  filter(!is.na(drinkpweek))
+exposure.count.aa <- nrow(exposure.aa)
+exposure.count.aa
+
+exposure.ea.glue <- glue("Complete exposure information
+                   n = {exposure.count.ea}")
+  
+exposure.ea.excluded.glue <- glue("Missing 2012 alcohol consumption
+          n = {outcome.count.ea - exposure.count.ea} excluded")
+  
+exposure.aa.glue <- glue("Complete exposure information
+                   n = {exposure.count.aa}")
+
+exposure.aa.excluded.glue <- glue("Missing 2012 alcohol consumption
+          n = {outcome.count.aa - exposure.count.aa} excluded")
+
+### CURRENTLY DRINKING
+# 3,485
+exposure.drinking.ea <-
+  exposure.ea %>%
+  filter(drinkpweek != 0)
+exposure.drinking.count.ea <- nrow(exposure.drinking.ea)
+exposure.drinking.count.ea
+
+# 513
+exposure.drinking.aa <-
+  exposure.aa %>%
+  filter(drinkpweek != 0)
+exposure.drinking.count.aa <- nrow(exposure.drinking.aa)
+exposure.drinking.count.aa
+
+exposure.drinking.ea.glue <- glue("Currently consumes alcohol
+                   n = {exposure.drinking.count.ea}")
+  
+exposure.drinking.ea.excluded.glue <- glue("Does not currently consume alcohol
+          n = {exposure.count.ea - exposure.drinking.count.ea} excluded")
+  
+exposure.drinking.aa.glue <- glue("Currently consumes alcohol
+                   n = {exposure.drinking.count.aa}")
+
+exposure.drinking.aa.excluded.glue <- glue("Does not currently consume alcohol
+          n = {exposure.count.aa - exposure.drinking.count.aa} excluded")
+
+### COVARIATES
+# 3,418
+complete.ea <-
+  exposure.drinking.ea %>%
+  drop_na(any_of(c(covariates)))
+complete.count.ea <- nrow(complete.ea)
+complete.count.ea
+
+# 504
+complete.aa <-
+  exposure.drinking.aa %>%
+  drop_na(any_of(c(covariates)))
+complete.count.aa <- nrow(complete.aa)
+complete.count.aa
+
+complete.ea.glue <- glue("European ancestry analytic sample
+                   n = {complete.count.ea}")
+  
+complete.ea.excluded.glue <- glue("Missing any 2012 covariate information
+          n = {exposure.drinking.count.ea - complete.count.ea} excluded")
+  
+complete.aa.glue <- glue("African ancestry analytic sample
+                   n = {complete.count.aa}")
+
+complete.aa.excluded.glue <- glue("Missing any 2012 covariate information
+          n = {exposure.drinking.count.aa - complete.count.aa} excluded")
+```
+
+```{r}
+complete <- rbind(complete.ea, complete.aa) %>%
+  mutate(RACE = droplevels(RACE))
+```
+
+```{r}
+#saveRDS(complete, here("data", "analytic", paste0(Sys.Date(), ".current.consumption.gscan.dpw.1smr.xs.rda")))
+```
+
+Latest version, current consumers - written with indexing, one index for each graph level
+```{r}
+graph <- grViz("
+digraph cohort_flow_chart {
+node [fontname = Helvetica, fontsize = 12, shape = box, width = 4]
+
+ancestry_ea[label = '@@1-1']
+ancestry_aa[label = '@@1-2']
+
+blank_snp_exclude_ea[label = '', width = 0.01, height = 0.01]
+genetic_ea_excluded[label = '@@2-2']
+genetic_ea[label = '@@2-1']
+blank_snp_exclude_aa[label = '', width = 0.01, height = 0.01]
+genetic_aa_excluded[label = '@@2-4']
+genetic_aa[label = '@@2-3']
+
+outcome_ea[label = '@@3-1']
+outcome_ea_blank[label = '', width = 0.01, height = 0.01]
+outcome_ea_excluded[label = '@@3-2']
+outcome_aa[label = '@@3-3']
+outcome_aa_blank[label = '', width = 0.01, height = 0.01]
+outcome_aa_excluded[label = '@@3-4']
+
+exposure_ea[label = '@@4-1']
+exposure_ea_blank[label = '', width = 0.01, height = 0.01]
+exposure_ea_excluded[label = '@@4-2']
+exposure_aa[label = '@@4-3']
+exposure_aa_blank[label = '', width = 0.01, height = 0.01]
+exposure_aa_excluded[label = '@@4-4']
+
+exposure_ea_current[label = '@@5-1']
+exposure_ea_current_blank[label = '', width = 0.01, height = 0.01]
+exposure_ea_current_excluded[label = '@@5-2']
+exposure_aa_current[label = '@@5-3']
+exposure_aa_current_blank[label = '', width = 0.01, height = 0.01]
+exposure_aa_current_excluded[label = '@@5-4']
+
+complete_ea[label = '@@6-1']
+complete_ea_blank[label = '', width = 0.01, height = 0.01]
+complete_ea_excluded[label = '@@6-2']
+complete_aa[label = '@@6-3']
+complete_aa_blank[label = '', width = 0.01, height = 0.01]
+complete_aa_excluded[label = '@@6-4']
+
+{ rank = same; ancestry_ea ancestry_aa}
+{ rank = same; blank_snp_exclude_ea genetic_ea_excluded blank_snp_exclude_aa genetic_aa_excluded}
+{ rank = same; genetic_ea genetic_aa}
+{ rank = same; outcome_ea outcome_aa}
+{ rank = same; outcome_ea_blank outcome_ea_excluded outcome_aa_blank outcome_aa_excluded}
+{ rank = same; exposure_ea exposure_aa}
+{ rank = same; exposure_ea_blank exposure_ea_excluded exposure_aa_blank exposure_aa_excluded}
+{ rank = same; exposure_ea_current exposure_aa_current}
+{ rank = same; exposure_ea_current_blank exposure_ea_current_excluded exposure_aa_current_blank exposure_aa_current_excluded}
+{ rank = same; complete_ea complete_aa}
+{ rank = same; complete_ea_blank complete_ea_excluded complete_aa_blank complete_aa_excluded}
+
+ancestry_ea -> blank_snp_exclude_ea [ dir = none ];
+blank_snp_exclude_ea -> genetic_ea_excluded [ minlen = 1 ];
+blank_snp_exclude_ea -> genetic_ea;
+
+ancestry_aa -> blank_snp_exclude_aa [ dir = none ];
+blank_snp_exclude_aa -> genetic_aa_excluded [ minlen = 1 ];
+blank_snp_exclude_aa -> genetic_aa;
+
+genetic_ea -> outcome_ea_blank [ dir = none ];
+outcome_ea_blank -> outcome_ea_excluded [ minlen = 1 ];
+outcome_ea_blank -> outcome_ea;
+
+genetic_aa -> outcome_aa_blank [ dir = none ];
+outcome_aa_blank -> outcome_aa_excluded [ minlen = 1 ];
+outcome_aa_blank -> outcome_aa;
+
+outcome_ea -> exposure_ea_blank [ dir = none ];
+exposure_ea_blank -> exposure_ea_excluded [ minlen = 1 ];
+exposure_ea_blank -> exposure_ea;
+
+outcome_aa -> exposure_aa_blank [ dir = none ];
+exposure_aa_blank -> exposure_aa_excluded [ minlen = 1 ];
+exposure_aa_blank -> exposure_aa
+
+###
+
+exposure_ea -> exposure_ea_current_blank [ dir = none ];
+exposure_ea_current_blank -> exposure_ea_current_excluded [ minlen = 1 ];
+exposure_ea_current_blank -> exposure_ea_current;
+
+exposure_aa -> exposure_aa_current_blank [ dir = none ];
+exposure_aa_current_blank -> exposure_aa_current_excluded [ minlen = 1 ];
+exposure_aa_current_blank -> exposure_aa_current;
+
+exposure_ea_current -> complete_ea_blank [ dir = none ];
+complete_ea_blank -> complete_ea_excluded [ minlen = 1 ];
+complete_ea_blank -> complete_ea;
+
+exposure_aa_current -> complete_aa_blank [ dir = none ];
+complete_aa_blank -> complete_aa_excluded [ minlen = 1 ];
+complete_aa_blank -> complete_aa
+
+}
+
+[1]: c(ancestry.ea.glue, ancestry.aa.glue)
+[2]: c(genetic.ea, genetic.ea.excluded, genetic.aa, genetic.aa.excluded)
+[3]: c(outcome.ea.glue, outcome.ea.excluded.glue, outcome.aa.glue, outcome.aa.excluded.glue)
+[4]: c(exposure.ea.glue, exposure.ea.excluded.glue, exposure.aa.glue, exposure.aa.excluded.glue)
+[5]: c(exposure.drinking.ea.glue, exposure.drinking.ea.excluded.glue, exposure.drinking.aa.glue, exposure.drinking.aa.excluded.glue)
+[6]: c(complete.ea.glue, complete.ea.excluded.glue, complete.aa.glue, complete.aa.excluded.glue)
+")
+```
+
+```{r, eval = F}
+graph %>% export_svg() %>% charToRaw %>% rsvg_pdf(here("results", paste0("wave2012_incl_excl_current_current_consumers", Sys.Date(), ".pdf")))
+```
+
+
+
+### Aside to look at HRS drinking trends
+
+```{r}
+dat <-
+  dat.all.pgs %>%
+  # Undo the factor formatting previously applied 
+  mutate(R11DRINK = as.numeric(R11DRINK)) %>%
+  # Start with entire HRS dataset
+  #hrs %>% filter(NIWWAVE == TRUE) %>%
+  # Filter to only those with publicly available genetic data
+  filter(GENETICS06 == TRUE | GENETICS08 == TRUE | GENETICS10 == TRUE) %>%
+  # Limit to European Ancestry
+  filter(!is.na(eaPC1_5A)) %>%
+  # Operate row-wise, because we're summing across the row, like rowSums
+  rowwise() %>%
+  # Define an everdrinks variable 
+  mutate(everdrinks = case_when(
+    # If all RAND currently drinks variables are missing, assign missing, otherwise, add the number of waves responded with currently drinks
+    is.na(R3DRINK) & is.na(R4DRINK) & is.na(R5DRINK) & is.na(R6DRINK) & is.na(R7DRINK) & is.na(R8DRINK) & is.na(R9DRINK) & is.na(R10DRINK) & is.na(R11DRINK) == TRUE ~ NA_real_,
+    TRUE ~ sum(c_across(matches("R\\d+DRINK$")), na.rm = TRUE)
+  )) %>%
+  # Define an everdrank variable, which is simply an indicator variable for the above drinking variable
+  mutate(everdrank = case_when(
+    everdrinks > 0 ~ 1,
+    everdrinks == 0 ~ 0,
+    TRUE ~ NA_real_
+  )) %>%
+  # Undo the row-wise grouping
+  ungroup()
+```
+
+```{r}
+x <- 
+  # Operate row-wise, because we're summing across the row, like rowSums
+  wave2012 %>% rowwise() %>%
+  # Define an everdrinks variable 
+  mutate(everdrinks = case_when(
+    # If all RAND currently drinks variables are missing, assign missing, otherwise, add the number of waves responded with currently drinks
+    is.na(R3DRINK) & is.na(R4DRINK) & is.na(R5DRINK) & is.na(R6DRINK) & is.na(R7DRINK) & is.na(R8DRINK) & is.na(R9DRINK) & is.na(R10DRINK) & is.na(R11DRINK) == TRUE ~ NA_real_,
+    TRUE ~ sum(c_across(matches("R\\d+DRINK$")), na.rm = TRUE)
+  )) %>%
+  # Define an everdrank variable, which is simply an indicator marker for the above drinking variable
+  mutate(everdrank = case_when(
+    everdrinks > 0 ~ 1,
+    everdrinks == 0 ~ 0,
+    TRUE, NA_real_
+  )) %>%
+  # Undo the rowwise grouping
+  ungroup()
+
+x %>% dplyr::select(everdrinks, matches("R\\d+DRINK$")) %>% filter(is.na(everdrinks))
+
+# Individuals in HRS who are missing drinking status information at every wave
+hrs %>% filter(is.na(R3DRINK) & is.na(R4DRINK) & is.na(R5DRINK) & is.na(R6DRINK) & is.na(R7DRINK) & is.na(R8DRINK) & is.na(R9DRINK) & is.na(R10DRINK) & is.na(R11DRINK)) %>% dplyr::select(HHIDPN, matches("R\\d+DRINK$"))
+
+# Get IDs for individuals in HRS who are missing drinking status information at every wave
+always.missing.drink.ids <- hrs %>% filter(is.na(R3DRINK) & is.na(R4DRINK) & is.na(R5DRINK) & is.na(R6DRINK) & is.na(R7DRINK) & is.na(R8DRINK) & is.na(R9DRINK) & is.na(R10DRINK) & is.na(R11DRINK)) %>% dplyr::select(HHIDPN, matches("R\\d+DRINK$")) %>% pull(HHIDPN)
+
+# No one is wave 2012 has all missing drinking status information
+wave2012$HHIDPN %in% always.missing.drink.ids %>% summary
+```
+
+```{r}
+#hrs %>% filter(NIWWAVE == TRUE) %>% filter(GENETICS06 == TRUE | GENETICS08 == TRUE | GENETICS10 == TRUE) %>% filter(RACE == "Non-Hispanic White, European ancestry") %>% filter(R11DRINK == 1)
+```
+
+
+```{r}
+ancestryPCs <- c("AncestryPC_1_5A", "AncestryPC_1_5B", "AncestryPC_1_5C", "AncestryPC_1_5D", "AncestryPC_1_5E")
+demographics <- c("NAGE", "GENDER", "DEGREE", "APOE012")
+additional_covars <- c( "R11SMOKEV", "NMARST", "R11CESD", "R11CONDE", "R11SAYRET")
+```
+
+```{r}
+univar.variables <- c("everdrank", "R11DRINK", "drinkpweek", "logdrinkpweek", "AD12", "RACE", "PGS4_DPW_GSCAN19", "pgs.norm", demographics, additional_covars)
+dat.univar <-
+  dat %>%
+  dplyr::select(all_of(univar.variables))
+```
+
+```{r}
+bivar.table.ea <- dat.univar %>%
+  tbl_summary(
+    by = "everdrank") %>%
+  add_p()
+bivar.table.ea
+```
+
+```{r}
+bivar.table.ea <- dat.univar %>%
+  tbl_summary(
+    by = "R11DRINK") %>%
+  add_p()
+bivar.table.ea
+```

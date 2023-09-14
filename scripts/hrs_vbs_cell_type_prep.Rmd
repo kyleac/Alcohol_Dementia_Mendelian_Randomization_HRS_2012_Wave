@@ -1,0 +1,254 @@
+---
+title: "HRS_VBS_cell_type_props"
+author: "Kyle Abraham Campbell"
+date: "1/30/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(DiagrammeR)
+library(DiagrammeRsvg)  # for conversion to svg
+library(factoextra)
+library(haven)
+library(here)
+library(pheatmap)
+library(PRISMAstatement)
+library(rsvg)  # for saving svg
+library(tidyverse)
+library(viridis)
+
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Based on investigation of the readme, Cesar's dataset is the latest release (December 2017 documentation date)
+```{r}
+#saveRDS(HRS_data_VBSvars_2016, here("data", "HRS_VBS_2016_Cesar.Rda"))
+data <- readRDS(here("data", "HRS_VBS_2016_Cesar.Rda"))
+```
+
+## Basic information
+N = 9934 participants in the Venous Blood sub-study of the Health and Retirement Study
+
+## Cell type variables
+
+Complete blood count variables \n
+
+* Granulocytes (will sum together for one variable, PGRAN)
+  + Basophils - PBASO
+  + Eosinophils - PEOS
+  + Neutrophils - PNEUT
+* Monocytes - PMONO
+* Lymphocytes - PLYMP (can split here based on flow cytometry below if desired)
+
+Flow cytometry percentages (not in use because DNA was extracted from whole blood, Percentage: PCT) \n
+
+* Lymphocytes
+  + B cells PBCELL_PCT
+  + CD4+ T cells PCD4T_PCT
+  + CD8+ T cells PCD8T_PCT
+* Peripheral Mononuclear Blood cells
+  + Dendritic cells PDC_PCT
+  + Monocytes PMONO (from complete blood count), PMONO_PCT (from flow, high technical CV)
+  + Natural Killer PNK_PCT
+
+To use cell type proportions in regression models, adjust models for percentage lymphocytes (PLYMP) and percentage granulocytes (PGRAN) from complete blood counts. Percentage monocytes (PMONO) is more stable (see histogram below for that visualization).
+```{r}
+# Flow cytometry counts - not currently in use
+#cell.types <- c("PBCELL_PCT", "PCD4T_PCT", "PCD8T_PCT", "PDC_PCT", "PMONO", "PNK_PCT")
+
+# Complete blood counts
+cell.types <- c("PBASO", "PEOS", "PNEUT", "PMONO", "PLYMP")
+
+cell.types.final <- c("PGRAN", "PLYMP", "PMONO")
+```
+
+
+```{r}
+# Total HRS participant number
+dat.initial.count <- dim(data)[1] %>% as.numeric()
+# Number of participants selected for the Venous Blood sub-study
+dat.vbs.count <- 9934
+
+# Select only the cell type proportions and subset to non-missing CBC for Principal Components Analysis, n = 9597
+dat.complete <- 
+  data %>%
+  dplyr::select(HHID, PN, all_of(cell.types)) %>%
+  mutate(HHIDPN = paste0(HHID, PN)) %>% 
+  select(!c(HHID, PN)) %>%
+  column_to_rownames(var = "HHIDPN") %>%
+  drop_na() %>%
+  mutate(PGRAN = PBASO + PEOS + PNEUT) %>%
+  select(!c(PBASO, PEOS, PNEUT)) %>%
+  select(PGRAN, PLYMP, PMONO) %>%
+  mutate(across(all_of(cell.types.final), .fns = ~ as.numeric(.x)))
+dat.complete.count <- dim(dat.complete)[1] %>% as.numeric
+
+# Sum
+dat.complete$rowsum <- rowSums(dat.complete)
+
+dat.analytic <- 
+  dat.complete %>%
+  filter(abs(rowsum - 100) <= 5)
+dat.analytic.count <- dim(dat.analytic)[1] %>% as.numeric
+```
+
+```{r}
+hist(dat.complete$rowsum)
+dat.complete$rowsum %>% summary
+```
+
+Only 3 values that differ more than 5% from 100%: 86%, 93.5%, and 142.3%; we'll exclude these
+```{r}
+(dat.complete$rowsum < 95 | dat.complete$rowsum > 105) %>% summary
+```
+
+Only 35 observations differ by more than 2% from adding to 100%
+```{r}
+(dat.complete$rowsum < 98 | dat.complete$rowsum > 102) %>% summary
+```
+
+Manually review those that differ more than 2%, only 35 observations
+```{r}
+dat.complete[(dat.complete$rowsum < 98 | dat.complete$rowsum > 102), ] %>% arrange(rowsum)
+```
+
+
+## Inclusion/exclusion of analytic sample
+
+All covariates Inclusion/exclusion chart
+```{r}
+dot <- flow_exclusions_dot(
+  incl_counts = c(
+    dat.initial.count,
+    dat.vbs.count,
+    dat.complete.count,
+    dat.analytic.count),
+  total_label = "Health and Retirement Study",
+  incl_labels = c(
+    "Venous Blood Study subsample",
+    "Complete data for complete blood count cell type proportions",
+    "Analytic sample"),
+  excl_labels = c(
+    "Not included in the Venous Blood Study subsample",
+    "Missing any complete blood count cell type proportions",
+    "Complete blood count proportions do not sum to approximately 100%"),
+  percent_of_total = TRUE
+)
+```
+
+Save large inclusion/exclusion chart
+```{r}
+grViz_object = grViz(dot)
+grViz_object
+#grViz_object %>%
+#    export_svg() %>%
+#    charToRaw %>% 
+#    rsvg_pdf(here("results", paste0("HRS_VBS_CBC_inclusion_exclusion", Sys.Date(), ".pdf")))
+```
+
+Save the complete VBS CBC data
+```{r}
+export <- 
+  dat.analytic %>%
+  rownames_to_column(var = "HHIDPN")
+export.idx <- export$HHIDPN
+
+data.analytic <- 
+  data %>%
+  mutate(HHIDPN = paste0(HHID, PN)) %>%
+  filter(HHIDPN %in% export.idx) %>%
+  mutate(PGRAN = PBASO + PEOS + PNEUT) %>%
+  mutate(across(.cols = PGRAN, ~ zap_label(.x))) %>%   # Remove labels, only necessary if using .sas7bdat
+  mutate(across(.cols = PGRAN, ~ zap_formats(.x)))     # Remove formats, only necessary if using .sas7bdat
+#saveRDS(export, here("data", paste0("analytic_VBS_CBC_", Sys.Date(), ".Rda")))
+```
+
+## Cell Type Proportions Exploration
+Heatmap to visualize the relative abundance of each cell type
+```{r}
+pheatmap(subset(dat.analytic, select = -c(rowsum)), show_rownames = FALSE) #, cutree_rows = 2, annotation_row = annotation.row)
+```
+
+```{r}
+dat.long <- 
+  dat.analytic %>%
+  pivot_longer(cols = c(PGRAN, PLYMP, PMONO), names_to = "Cell Type", values_to = "Percentage") %>%
+  mutate(`Cell Type` = factor(`Cell Type`, levels = c("PGRAN", "PLYMP", "PMONO"), labels = c("Granulocytes", "Lymphocytes", "Monocytes"))) %>%
+  mutate(Percentage = as.numeric(as.character(Percentage)))
+```
+
+```{r}
+ggplot(data = dat.long,
+       mapping = aes(
+         fill = `Cell Type`,
+         x = Percentage
+       )) +
+  geom_histogram(alpha = 0.6, position = 'identity') +
+  scale_fill_viridis(discrete = TRUE) + theme_bw()
+```
+## Cell Type Proportion Dimension Reduction
+Run PCA; Code based on http://www.sthda.com/english/articles/31-principal-component-methods-in-r-practical-guide/118-principal-component-analysis-in-r-prcomp-vs-princomp/
+```{r}
+res.pca <- prcomp(dat.analytic, scale = F)
+#saveRDS(res.pca, paste0(data_dir, "GSE75010_cell_type_proportions_pca_", Sys.Date(), ".rda"))
+pca.summary <- summary(res.pca)
+
+prop.var <- as.data.frame(pca.summary$importance)
+prop.var
+```
+
+https://blog.bioturing.com/2018/06/18/how-to-read-pca-biplots-and-scree-plots/ briefly summarizes applied PCA analysis.
+Scree plot
+```{r}
+fviz_eig(res.pca)
+```
+
+```{r}
+#View(abs(res.pca$rotation))
+colSums(res.pca$rotation)
+#View(res.pca$center)
+```
+
+Graph of individuals. Individuals with a similar profile are grouped together.
+```{r}
+fviz_pca_ind(res.pca,
+             col.ind = "cos2", # Color by the quality of representation
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             label = F
+             )
+```
+
+Graph of variables. Positively correlated variables point to the same side of the plot. Negatively correlated variables point to opposite sides of the graph
+```{r}
+pc.1.2 <- fviz_pca_var(res.pca,
+             col.var = "contrib", # Color by contributions to the PC
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             legend.title = "Contribution",
+             # Default labelsize = 4
+             labelsize = 2*4,
+             repel = TRUE,      # Avoid text overlapping
+             ) + 
+  theme(legend.position = "none")
+pc.1.2
+#ggsave(paste0(results_dir, "variables_pca_1_2_", Sys.Date(), ".png"))
+```
+
+```{r}
+#print(res.pca$rotation)
+loadings <-res.pca$rotation
+```
+
+```{r}
+pc.1.3 <- fviz_pca_var(res.pca,
+             axes = c(1,3),
+             col.var = "contrib", # Color by contributions to the PC
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             legend.title = "Contribution",
+             # Default labelsize = 4
+             labelsize = 2*4,
+             repel = TRUE,     # Avoid text overlapping 
+             ) + 
+  theme(legend.position = "none")
+pc.1.3
+#ggsave(paste0(results_dir, "variables_pca_1_3_", Sys.Date(), ".png"))
+```

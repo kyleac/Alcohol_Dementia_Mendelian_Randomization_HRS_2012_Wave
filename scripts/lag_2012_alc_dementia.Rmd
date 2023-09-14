@@ -254,6 +254,12 @@ dat <-
 summary(dat$everdrinker)
 ```
 
+Save a copy for export/use.
+```{r}
+#saveRDS(dat, here("data", paste0(Sys.Date(), "_kac_democogwide_alc_dem_formatted.rda")))
+```
+
+
 ## Covariates for consideration
 Create a vector of variables for bivariate consideration and, separately, covariates. Order matters for gtsummary
 ```{r}
@@ -274,7 +280,7 @@ covariates  = c("NAGE", "GENDER", "RACE", "DEGREE", "drinkpweek",
 ```
 
 ## Analytic sample inclusion/exclusion flow chart
-TODO: Need to filter out prevalent cases with prior to 60 onset
+TODO: consider filter out prevalent cases with prior to 60 onset
 ```{r}
 wave.2012.count <- nrow(dat)
 
@@ -284,10 +290,10 @@ genetic.subsample <-
 genetic.subsample.count <- nrow(genetic.subsample)
 
 # Need to filter out prevalent cases with prior to 60 onset
-#age65 <-
+#age60 <-
 #  genetic.subsample %>%
-#  filter(NAGE >= 65)
-#age65.count <- nrow(age65)
+#  filter(NAGE >= 60)
+#age60.count <- nrow(age60)
 
 ancestry.subsample <- 
   genetic.subsample %>%
@@ -401,11 +407,7 @@ dot <- flow_exclusions_dot(
 Save large inclusion/exclusion chart
 ```{r}
 grViz_object = grViz(dot)
-
-grViz_object %>%
-    export_svg() %>%
-    charToRaw %>% 
-    rsvg_pdf(here("results", paste0("wave2012_detailed_excl_", Sys.Date(), ".pdf")))
+#grViz_object %>% export_svg() %>% charToRaw %>% rsvg_pdf(here("results", paste0("wave2012_detailed_excl_", Sys.Date(), ".pdf")))
 ```
 
 Get a complete dataset

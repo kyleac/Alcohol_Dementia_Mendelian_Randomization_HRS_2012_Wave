@@ -23,7 +23,7 @@ library(tidyverse)
 library(mr.raps)
 #devtools::install_github("WSpiller/RadialMR")
 library(RadialMR)
-#devtools::install_github("explodecomputer/tryx")
+devtools::install_github("explodecomputer/tryx")
 library(tryx)
 #remotes::install_github("MRCIEU/TwoSampleMR")
 library(TwoSampleMR)
@@ -163,6 +163,27 @@ load_out_dat <- extract_outcome_data(snps = alc_exp_dat$SNP, outcomes = 'ieu-b-2
 dat <- harmonise_data(alc_exp_dat, load_out_dat)
 ```
 
+
+Recalculate fstats after harmonization
+```{r}
+instrument.ids <- dat %>% filter(mr_keep == T) %>% pull(SNP)
+instrument.info <- gscan.dpw.formatted %>%
+  filter(SNP %in% instrument.ids) %>%
+  mutate(pve = (2*beta^2*eaf*(1-eaf))/(2*beta^2*eaf*(1-eaf)+se^2*2*n*eaf*(1-eaf))) %>%
+  mutate(fstat_snp = ((n-1-1)*pve)/1/(1-pve)^2) %>%
+  mutate(fstat = ((n-nrow(gscan.dpw)-1)*(sum(pve))/nrow(gscan.dpw)/(1-sum(pve))^2))
+
+
+ggplot(data = instrument.info, mapping = (aes( x = fstat_snp))) +
+  geom_histogram() +
+  theme_bw()
+
+ggplot(data = instrument.info, mapping = (aes( x = fstat_snp))) +
+  geom_histogram() +
+  theme_bw() +
+  xlim(0,100)
+```
+
 ```{r}
 #View(mr_method_list())
 ```
@@ -282,7 +303,7 @@ harmonized_blank -> harmonized;
 ")
 ```
 
-```{r}
+```{r, eval = F}
 graph %>% export_svg() %>% charToRaw %>% rsvg_pdf(here("results", paste0("instrument_incl_excl_HRS_1smr_", Sys.Date(), ".pdf")))
 ```
 
@@ -293,10 +314,14 @@ Select which 2SMR models to run
 ```{r}
 methods.list <-
   mr_method_list() %>%
-  filter(use_by_default == T | 
-           heterogeneity_test == T | 
-           obj == "mr_raps"
+    filter(use_by_default == T | 
+          heterogeneity_test == T
            ) %>%
+  # Dropping mr_raps for now due to error
+  #filter(use_by_default == T | 
+  #         heterogeneity_test == T | 
+  #         obj == "mr_raps"
+  #         ) %>%
   filter(!(name %in% c("Unweighted regression", "Maximum Likelihood"))) %>%
   pull(obj)
   
@@ -331,8 +356,26 @@ res <- mr(dat, method_list = methods.list)
 
 ```{r}
 res.or <- generate_odds_ratios(res)
-quick_2smr_kable(res.or)
+res.or
 ```
+
+```{r format_and_export_primary_2smr_results}
+res.or %>%
+  dplyr::select(!id.exposure:exposure) %>%
+  dplyr::select(!c(nsnp, b, se, lo_ci, up_ci)) %>%
+  rename(
+    `Estimator` = method,
+    `Odds ratio` = or,
+    `Lower 95% CI` = or_lci95,
+    `Upper 95% CI` = or_uci95,
+    `P-value` = pval
+  ) %>%
+  mutate(across(where(is.numeric), ~ round(.x, digits = 2))) %>%
+  filter(Estimator != "IVW radial") %>%
+  dplyr::select(Estimator, `Odds ratio`, `Lower 95% CI`, `Upper 95% CI`, `P-value`) %>%
+  gt()
+```
+
 
 No significant results with any of the default MR tests in TwoSampleMR. Simple mode prioritizes the collection of moderate inverse effect SNP clusters. Weighting in weighted mode attenuates this effect.
 
@@ -343,16 +386,17 @@ p1[[1]]
 
 Heterogeneity in effects, suggesting violating of IV or modeling assumptions, likely due to horizontal pleiotropy. Further discussion here: https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6659376/. Similar Q statistics for the IVW and MR Egger suggest the Egger is a no better fit than IVW.
 ```{r}
-mr_heterogeneity(dat, method_list = methods.hetero) %>% quick_2smr_kable
+mr_heterogeneity(dat, method_list = methods.hetero)
+res.heterogeneity <- mr_heterogeneity(dat, method_list = methods.hetero)
 ```
 
 Egger intercept is not different than 0, suggests no bias due to directional horizontal pleiotropy
 ```{r}
-mr_pleiotropy_test(dat) %>% quick_2smr_kable
+mr_pleiotropy_test(dat)
 ```
 
 rs56030824 appears to be an outlier here and is confirmed so with MR-PRESSO below. rs1229984 is the ALDH SNP
-```{r}
+```{r mr_single_snp_forest_plot}
 res_single <- mr_singlesnp(dat)
 p2 <- mr_forest_plot(res_single)
 p2[[1]]
@@ -375,7 +419,6 @@ snp.list <- snp.list[-length(snp.list)]
 #saveRDS(snp.list, here("data", "analytic", "2smr_snp_hits_05_23_2022.rda"))
 ```
 
-
 rs56030824 is an outlier here, too.
 ```{r}
 res_single <- mr_singlesnp(dat)
@@ -384,18 +427,18 @@ p4[[1]]
 ```
 
 Steiger test of causal direction suggests proposed direction is accurate.
-```{r}
+```{r Steiger_test}
 out <- directionality_test(dat)
-quick_2smr_kable(out)
+out
 ```
 
 Increase bootstrap to 2000
-```{r}
+```{r mr_presso}
 res.presso <- run_mr_presso(dat, NbDistribution = 2000, SignifThreshold = 0.05)
 ```
 
 rs56030824 identified as an outlier. With it removed, estimate moves even closer to the null.
-```{r}
+```{r mr_presso_results}
 res.presso[[1]]$`Main MR results`
 res.presso[[1]]$`MR-PRESSO results`$`Outlier Test`
 dat$SNP[52]
@@ -419,7 +462,7 @@ mrpresso.res <- tibble(
 )
 ```
 
-```{r}
+```{r extract_aldh_results}
 res.aldh <- res_single %>% filter(SNP == "rs1229984")
 res.aldh.or <- generate_odds_ratios(res.aldh)
 res.outlier <- res_single %>% filter(SNP == "rs56030824")

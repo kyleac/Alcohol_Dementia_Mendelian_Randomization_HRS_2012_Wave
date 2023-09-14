@@ -16,7 +16,7 @@ library(ggsankey)
 library(gtsummary)
 library(haven)
 library(here)
-library(PRISMAstatement)
+#library(PRISMAstatement)
 library(rsvg)  # for saving svg
 library(tidymodels)
 library(tidyverse)

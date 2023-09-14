@@ -3,9 +3,9 @@ library(tidyverse)
 # Race/ethnicity
 factor_race = function(var) {
   var = factor(var, levels = c(0, 1, 2, 7), labels =
-                 c("Not obtained", "White/Caucasian",
-                   "Black or African American", "Other"))
-  var = relevel(var, ref = "White/Caucasian")
+                 c("Not obtained", "Non-Hispanic White, European ancestry",
+                   "Non-Hispanic Black, African ancestry", "Other"))
+  var = relevel(var, ref = "Non-Hispanic White, European ancestry")
   var = droplevels(var)
   return(var)
 }
@@ -24,7 +24,7 @@ factor_APOE_012 = function(var) {
   return(var)
 }
 
-# R11DRINK, Ever drink
+# R11DRINK, Currently drinks
 factor_ever_drink = function(var) {
   var = factor(var, levels = c(0, 1), labels = c("Doesn't drink", "Drinks"))
   var = relevel(var, ref = "Doesn't drink")
