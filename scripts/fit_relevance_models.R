@@ -18,8 +18,8 @@ fit_relevance_models <- function(instruments, exposure, tidy_model, data) {
   
   # Set the covariate vectors, one model for naive and each of the three combinations below
   combined.pgs.covariates <- c("AncestryPC_1_5A", "AncestryPC_1_5B", "AncestryPC_1_5C", "AncestryPC_1_5D", "AncestryPC_1_5E")
-  demographics <- c("NAGE", "GENDER", "DEGREE")
-  additional_covars <- c("R11SMOKEV", "NMARST", "R11CESD", "R11CONDE", "R11SAYRET")
+  demographics <- c("NAGE", "GENDER")
+  additional_covars <- c("DEGREE", "R11SMOKEV", "NMARST", "R11CESD", "R11CONDE", "R11SAYRET")
   
   # Fit the linear model across all instruments
   fit <-
