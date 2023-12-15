@@ -50,19 +50,19 @@ dat <- readRDS(here("data", "analytic", "2022-12-30.gscan.dpw.1smr.xs.rda"))
 dat <- dat %>%
   mutate(log2drinkpweek = log2(1 + drinkpweek)) %>%
   set_variable_labels(
-    NAGE = "Age",
+    NAGE = "Age in years",
     GENDER = "Sex",
-    DEGREE = "Education",
+    DEGREE = "Educational attainment",
     AD12 = "Dementia classification",
-    drinkpweek = "Drinks per week",
+    drinkpweek = "Alcoholic drinks per week",
     log2drinkpweek = "Doubling in weekly alcohol consumption",
-    PGS4_DPW_GSCAN19 = "Whole-genome Polygenic Risk Score",
-    pgs.norm = "GSCAN19 Drink per week SNP hits Polygenic Risk Score",
+    PGS4_DPW_GSCAN19 = "Whole-genome polygenic risk score (n=1,399,824 SNPs) for alcohol consumption",
+    pgs.norm = "Candidate instrumental variable (n=70 SNPs) polygenic risk score for alcohol consumption",
     #R11DRINK = "Ever drinks",
     #R11DRINKD = "How many days per week when drinking",
     #R11DRINKN = "Number of drinks per day when drinking",
     APOE012 = paste0("APOE-", "\U03B5", "4 allele count"),
-    R11SMOKEV = "Ever smokes",
+    R11SMOKEV = "Smoking status",
     NMARST = "Marital status",
     R11CESD = "CES-D depressive symptoms score",
     R11CONDE = "Number of comorbidities",
@@ -266,6 +266,27 @@ ancestry.models <- list(mr.cind.ea = mr.cind.ea, mr.dem.ea = mr.dem.ea,
 saveRDS(ancestry.models, here("results", "analytic", "mendelianrandomization_package_models", paste0("one_smr_pcs_", Sys.Date(), ".rda")))
 ```
 
+```{r, eval = F Age sex genetic PCs models}
+mr.cind.ea <- run_snp_mr(exposure = "log2drinkpweek", outcome = "AD12.CIND.outcome", covariates = c("NAGE", "GENDER", combined.pgs.covariates), dat = dat.ea)
+mr.dem.ea <- run_snp_mr(exposure = "log2drinkpweek", outcome = "AD12.Dementia.outcome", covariates = c("NAGE", "GENDER", combined.pgs.covariates), dat = dat.ea)
+mr.cind.aa <- run_snp_mr(exposure = "log2drinkpweek", outcome = "AD12.CIND.outcome", covariates =  c("NAGE", "GENDER", combined.pgs.covariates), dat = dat.aa)
+mr.dem.aa <- run_snp_mr(exposure = "log2drinkpweek", outcome = "AD12.Dementia.outcome", covariates =  c("NAGE", "GENDER", combined.pgs.covariates), dat = dat.aa)
+mr.binary.ea <- run_snp_mr(exposure = "log2drinkpweek", outcome = "AD12.binary", covariates =  c("NAGE", "GENDER", combined.pgs.covariates), dat = dat.ea)
+mr.binary.aa <- run_snp_mr(exposure = "log2drinkpweek", outcome = "AD12.binary", covariates =  c("NAGE", "GENDER", combined.pgs.covariates), dat = dat.aa)
+```
+
+```{r}
+age.sex.pcs.models <- readRDS(here("results", "analytic", "mendelianrandomization_package_models",  paste0("one_smr_age_sex_pcs_2023-12-05.rda")))
+```
+
+```{r, eval = F}
+age.sex.pcs.models <- list(mr.cind.ea = mr.cind.ea, mr.dem.ea = mr.dem.ea,
+               mr.cind.aa = mr.cind.aa, mr.dem.aa = mr.dem.aa,
+               mr.binary.ea = mr.binary.ea, mr.binary.aa = mr.binary.aa)
+
+saveRDS(age.sex.pcs.models, here("results", "analytic", "mendelianrandomization_package_models", paste0("one_smr_age_sex_pcs_", Sys.Date(), ".rda")))
+```
+
 ```{r, eval = F Add demographics to ancestry PCs model}
 mr.cind.ea <- run_snp_mr(exposure = "log2drinkpweek", outcome = "AD12.CIND.outcome", covariates = c(demographics, combined.pgs.covariates), dat = dat.ea)
 mr.dem.ea <- run_snp_mr(exposure = "log2drinkpweek", outcome = "AD12.Dementia.outcome", covariates = c(demographics, combined.pgs.covariates), dat = dat.ea)
@@ -330,7 +351,8 @@ saveRDS(full.models, here("results", "analytic", "mendelianrandomization_package
 
 ### Look at an individual set of models
 ```{r}
-mr.res <- full.models
+mr.res <- age.sex.pcs.models
+#mr.res <- full.models
 ```
 
 ```{r}
@@ -390,6 +412,11 @@ map(mr.res, ~ mr_egger(.x$MRInputObject))
 funnel.list <- map(mr.res, ~ mr_funnel(.x$MRInputObject))
 ```
 
+
+```{r}
+mr_funnel(full.models$mr.cind.ea$MRInputObject)
+```
+
 ```{r}
 map(mr.res, ~ mr_forest(.x$MRInputObject))
 ```
@@ -402,12 +429,18 @@ loo.list <- map(mr.res, ~ mr_loo(.x$MRInputObject))
 
 Save loo plots
 ```{r, eval = F}
-ggsave(here("results", "one_smr", "full_models_loo", paste0("ea_cind", Sys.Date(), ".png")), plot = loo.list[[1]] + ggtitle("European ancestry - Cognitive impairment - Leave one out"))
-ggsave(here("results", "one_smr", "full_models_loo", paste0("ea_dem", Sys.Date(), ".png")), plot = loo.list[[2]] + ggtitle("European ancestry - Dementia - Leave one out"))
-ggsave(here("results", "one_smr", "full_models_loo", paste0("aa_cind", Sys.Date(), ".png")), plot = loo.list[[3]] + ggtitle("African ancestry - Cognitive impairment - Leave one out"))
-ggsave(here("results", "one_smr", "full_models_loo", paste0("aa_dem", Sys.Date(), ".png")), plot = loo.list[[4]] + ggtitle("African ancestry - Dementia - Leave one out"))
+ggsave(here("results", "one_smr", "full_models_loo", paste0("ea_cind", Sys.Date(), ".png")), plot = loo.list[[1]] + ggtitle("European ancestries - Cognitive impairment - Leave one out"), dpi = 300)
+ggsave(here("results", "one_smr", "full_models_loo", paste0("ea_dem", Sys.Date(), ".png")), plot = loo.list[[2]] + ggtitle("European ancestries - Dementia - Leave one out"), dpi = 300)
+ggsave(here("results", "one_smr", "full_models_loo", paste0("aa_cind", Sys.Date(), ".png")), plot = loo.list[[3]] + ggtitle("African ancestries - Cognitive impairment - Leave one out"), dpi = 300)
+ggsave(here("results", "one_smr", "full_models_loo", paste0("aa_dem", Sys.Date(), ".png")), plot = loo.list[[4]] + ggtitle("African ancestries - Dementia - Leave one out"), dpi = 300)
 ```
 
+```{r, eval = F}
+ggsave(here("results", "one_smr", "age_sex_pcs", paste0("ea_cind", Sys.Date(), ".png")), plot = loo.list[[1]] + ggtitle("European genetic ancestries - Cognitively impaired non-dementia"), dpi = 300)
+ggsave(here("results", "one_smr", "age_sex_pcs", paste0("ea_dem", Sys.Date(), ".png")), plot = loo.list[[2]] + ggtitle("European genetic ancestries - Dementia"), dpi = 300)
+ggsave(here("results", "one_smr", "age_sex_pcs", paste0("aa_cind", Sys.Date(), ".png")), plot = loo.list[[3]] + ggtitle("African genetic ancestries - Cognitively impaired non-dementia"), dpi = 300)
+ggsave(here("results", "one_smr", "age_sex_pcs", paste0("aa_dem", Sys.Date(), ".png")), plot = loo.list[[4]] + ggtitle("African genetic ancestries - Dementia"), dpi = 300)
+```
 
 ```{r}
 mr_plot(mr.res$mr.cind.ea$MRAllObject, error = TRUE, orientate = TRUE, line = "ivw", interactive = T)
@@ -498,14 +531,14 @@ Create the table
 ```{r}
 models.list <- list(
   naive.models,
-  demographics.models,
+  age.sex.pcs.models,
   demographics.apoe.models,
   full.models
 )
 
 models.names.list <- list(
   "Unadjusted",
-  "Demographics",
+  "Age and sex",
   "Demographics and APOE",
   "Fully adjusted"
 )
@@ -517,11 +550,6 @@ res.all <- do.call(rbind, res.all.x) %>%
   filter(Outcome != "Any impairment") %>%
   dplyr::select(!c(Model, `Std Error`))
 ```
-
-```{r}
-res.all
-```
-
 
 ```{r}
 format_gt_table <- function(x) {
@@ -536,7 +564,6 @@ format_gt_table <- function(x) {
 }
 
 # Comes from running the res statements below
-# TODO: pull the sensitivity models for ivglm - whole genome PGS, instrument-qualified PGS, and rs1229984
 #saveRDS(res, here("data", "ivglm_pgs_res.rda"))
 res.ivglm <- readRDS(here("data", "ivglm_pgs_res.rda"))
 
@@ -578,7 +605,7 @@ res.all.combined %>%
   dplyr::select(!Ancestry) %>%
   format_gt_table() %>%
   gt::tab_spanner(
-        label = "European ancestry",
+        label = "European ancestries",
         columns = c(Estimate, `Lower 95% CI`, `Upper 95% CI`,  `P-value`)
       )
 
@@ -588,12 +615,258 @@ res.all.combined %>%
   dplyr::select(!Ancestry) %>%
   format_gt_table() %>%
   gt::tab_spanner(
-        label = "African ancestry",
+        label = "African ancestries",
         columns = c(Estimate, `Lower 95% CI`, `Upper 95% CI`,  `P-value`)
       )
 
 
 ```
+
+All alternative model specifications from MendelianRandomization
+```{r}
+res.all.models <- do.call(rbind, res.all.x) %>%
+  filter(Outcome != "Any impairment") %>%
+  dplyr::select(!c(`Std Error`)) %>%
+  dplyr::select(Ancestry, Outcome, Method, Model, Estimate, `Lower 95% CI`, `Upper 95% CI`, `P-value`) %>%
+  arrange(Ancestry, Outcome, Method, Model)
+```
+
+Pulling all allele score model results and SNP-wise model results for supplementary table
+```{r}
+res.ivglm.all.models <- readRDS(here("results", "one_smr_allele_scores", "exposure_coefficient_output_table_2023-12-05.rda"))
+
+res.ivglm.all.models.formatted <- 
+  res.ivglm.all.models %>%
+  filter(model == "ts") %>%
+  dplyr::select(!c(model, std.error, term, statistic, covariates, variant, Ancestry)) %>%
+  rename(
+    Ancestry = ancestry,
+    Estimate = estimate,
+    "Lower 95% CI" = conf.low,
+    "Upper 95% CI" = conf.high,
+    `P-value` = p.value
+  ) %>%
+  mutate(
+      Outcome = case_when(
+        Outcome == "AD12.CIND.outcome" ~ "Cognitive impairment",
+        Outcome == "AD12.Dementia.outcome" ~ "Dementia",
+        Outcome == "AD12.binary" ~ "Any impairment"
+      )
+    ) %>%
+  mutate(Ancestry = case_when(
+    grepl("ea", Ancestry) ~ "European ancestry",
+    grepl("aa", Ancestry) ~ "African ancestry"
+  )) %>%
+  mutate(Method = case_when(
+    grepl("PGS4_DPW_GSCAN", Method) ~ "Whole genome polygenic score",
+    grepl("pgs.norm", Method) ~ "Instrument polygenic score",
+    grepl("rs1229984", Method) ~ "rs1229984 alone"
+  )) %>%
+  filter(Outcome %in% c("Dementia", "Cognitive impairment")) %>%
+  mutate(Model = ifelse(
+    Model == "Subject",
+    "Demographics and APOE",
+    Model
+  )) %>%
+  mutate(Model = ifelse(
+    Model == "Fully",
+    "Fully adjusted",
+    Model
+  )) %>%
+  filter(Model != "Demographics")
+
+res.all.models.combined <- rbind(res.all.models %>% dplyr::select(Ancestry, Outcome, Method, Model, Estimate, `Lower 95% CI`, `Upper 95% CI`, `P-value`),
+                          res.ivglm.all.models.formatted %>% dplyr::select(Ancestry, Outcome, Method, Model, Estimate, `Lower 95% CI`, `Upper 95% CI`, `P-value`)) %>%
+  mutate(across(where(is.double), round, 2)) %>%
+  mutate(Ancestry = ifelse(
+    Ancestry == "European ancestry",
+    "European ancestries",
+    "African ancestries"
+  )) %>%
+  arrange(Ancestry, Outcome, Method, Model)
+
+#write.xlsx(res.all.models.combined, file = here("results", "one_smr"))
+```
+
+```{r}
+View(res.all.models.combined)
+res.all.models.combined
+```
+
+
+```{r}
+res.ivglm.all.models.formatted %>% colnames
+```
+
+
+
+```{r}
+res.ivglm.all.models.formatted$Model %>% factor %>% levels
+```
+
+```{r}
+res.all.models$Model %>% factor %>% levels
+```
+
+Formatting the supplementary table
+```{r}
+# Use to prevent scientific notation output
+options(scipen=999)
+```
+
+Conventional logistic regression results
+```{r}
+res.logit <- readRDS(here("results", "conventional_glm", "full_output_table_2023-12-06.rda"))
+
+res.logit.formatted <- res.logit %>%
+  mutate(Method = "Conventional regression") %>%
+  rename(
+    Estimate = estimate,
+    "Lower 95% CI" = conf.low,
+    "Upper 95% CI" = conf.high,
+    `P-value` = p.value
+  ) %>%
+  filter(Model != "Demographics") %>%
+  filter(term == "log2drinkpweek") %>%
+    mutate(
+      Outcome = case_when(
+        Outcome == "AD12.CIND.outcome" ~ "Cognitive impairment",
+        Outcome == "AD12.Dementia.outcome" ~ "Dementia",
+        Outcome == "AD12.binary" ~ "Any impairment"
+      )
+    ) %>%
+  filter(Outcome %in% c("Dementia", "Cognitive impairment")) %>%
+  mutate(Model = ifelse(
+    Model == "Subject",
+    "Demographics and APOE",
+    Model
+  )) %>%
+  mutate(Model = ifelse(
+    Model == "Fully",
+    "Fully adjusted",
+    Model
+  )) %>% 
+  dplyr::select("Ancestry", "Outcome", "Method", "Model", "Estimate", "Lower 95% CI", "Upper 95% CI", "P-value")
+```
+
+```{r}
+colnames(res.logit)
+colnames(x)
+colnames(res.all.all)
+```
+
+
+```{r}
+res.non.conventional <- rbind(res.all.models, res.ivglm.all.models.formatted) %>%
+  dplyr::select(Ancestry, Outcome, Method, Model, Estimate, `Lower 95% CI`, `Upper 95% CI`, `P-value`)
+
+# Formatting
+res.all.all <- rbind(res.non.conventional, res.logit.formatted) %>%
+    mutate(Model = ifelse(Model == "Demographics and APOE", paste0("Age, sex, educational attainment, ", "APOE-", "\U03B5", "4 allele status"), Model)) %>%
+  # Renaming to more informative/clear polygenic score descriptions
+  mutate(Method = ifelse(Method == "Whole genome polygenic score", "Whole-genome polygenic risk score (n=1,399,824 SNPs) for alcohol consumption", Method)) %>%
+  mutate(Method = ifelse(Method == "Instrument polygenic score", "Candidate instrumental variable (n=70 SNPs) polygenic risk score for alcohol consumption", Method)) %>%
+  # Rearranging factor levels for method
+  mutate(Method = factor(Method, levels = c("Conventional regression", "Whole-genome polygenic risk score (n=1,399,824 SNPs) for alcohol consumption", "Candidate instrumental variable (n=70 SNPs) polygenic risk score for alcohol consumption", "rs1229984 alone", "Inverse variance weighted", "MR-Egger", "MR-Egger intercept", "Simple median", "Weighted median"))) %>%
+  mutate(Outcome = ifelse(
+    Outcome == "Cognitive impairment", "Cognitively impaired, non-dementia", Outcome
+  )) %>%
+  mutate(Outcome = ifelse(
+    Outcome == "Normal", "Cognitively normal", Outcome
+  ))
+
+res.all.all.aa <- 
+  res.all.all %>%
+  filter(Ancestry == "African ancestry") %>%
+  dplyr::select(!Ancestry) %>%
+  format_gt_table() %>%
+  gt::tab_spanner(
+        label = "African genetic ancestries",
+        columns = c(Method, Model, Estimate, `Lower 95% CI`, `Upper 95% CI`, `P-value`)
+      )
+
+#res.all.all.aa %>% gt::gtsave(filename = here("results", "analytic", "tables", "one_smr", "supp_table_aa_20231206.docx"))
+
+res.all.all.ea <-
+  res.all.all %>%
+  filter(Ancestry == "European ancestry") %>%
+  dplyr::select(!Ancestry) %>%
+  format_gt_table() %>%
+  gt::tab_spanner(
+        label = "European genetic ancestries",
+        columns = c(Method, Model, Estimate, `Lower 95% CI`, `Upper 95% CI`, `P-value`)
+      )
+
+#res.all.all.ea %>% gt::gtsave(filename = here("results", "analytic", "tables", "one_smr", "supp_table_ea_20231206.docx"))
+
+
+```
+
+Primary results tables
+```{r}
+res.primary.conventional.regression <-
+  res.all.all %>%
+  filter(Method == "Conventional regression") %>%
+  filter(Model == "Fully adjusted")
+
+res.primary.mendelian.randomization <-
+  res.all.all %>%
+  filter(Method != "Conventional regression") %>%
+  filter(Model == "Age and sex") %>%
+  mutate(Model = "Age, sex, and genetic principal components")
+
+res.primary.aa <- rbind(res.primary.conventional.regression, res.primary.mendelian.randomization) %>%
+  filter(Ancestry == "African ancestry") %>%
+  dplyr::select(!Ancestry) %>%
+  dplyr::select(!Model) %>%
+  format_gt_table() %>%
+  gt::tab_spanner(
+        label = "African genetic ancestries",
+        columns = c(Method, Estimate, `Lower 95% CI`, `Upper 95% CI`, `P-value`)
+      )
+
+#res.primary.aa %>% gt::gtsave(filename = here("results", "analytic", "tables", "one_smr", "main_table_aa_20231207.docx"))
+
+
+res.primary.ea <- rbind(res.primary.conventional.regression, res.primary.mendelian.randomization) %>%
+  filter(Ancestry == "European ancestry") %>%
+  dplyr::select(!Ancestry) %>%
+  dplyr::select(!Model) %>%
+  format_gt_table() %>%
+  gt::tab_spanner(
+        label = "European genetic ancestries",
+        columns = c(Method, Estimate, `Lower 95% CI`, `Upper 95% CI`, `P-value`)
+      )
+
+#res.primary.ea %>% gt::gtsave(filename = here("results", "analytic", "tables", "one_smr", "main_table_ea_20231207.docx"))
+```
+
+
+Formatting decisions from above (for reference on labels only at this point)
+```{r}
+dat <- dat %>%
+  mutate(log2drinkpweek = log2(1 + drinkpweek)) %>%
+  set_variable_labels(
+    NAGE = "Age in years",
+    GENDER = "Sex",
+    DEGREE = "Educational attainment",
+    AD12 = "Dementia classification",
+    drinkpweek = "Alcoholic drinks per week",
+    log2drinkpweek = "Doubling in weekly alcohol consumption",
+    PGS4_DPW_GSCAN19 = "Whole-genome polygenic risk score (n=1,399,824 SNPs) for alcohol consumption",
+    pgs.norm = "Candidate instrumental variable (n=70 SNPs) polygenic risk score for alcohol consumption",
+    #R11DRINK = "Ever drinks",
+    #R11DRINKD = "How many days per week when drinking",
+    #R11DRINKN = "Number of drinks per day when drinking",
+    APOE012 = paste0("APOE-", "\U03B5", "4 allele count"),
+    R11SMOKEV = "Smoking status",
+    NMARST = "Marital status",
+    R11CESD = "CES-D depressive symptoms score",
+    R11CONDE = "Number of comorbidities",
+    R11SAYRET = "Retirement status"
+  )
+```
+
 
 Code examples from other scripts for possible gt table formatting if want to stack/merge ancestry results
 ```{r, eval = F, include = F}
@@ -688,7 +961,7 @@ forest
 # Conventional logistic regression
 
 ```{r}
-res.logit <- readRDS(here("results", "conventional_glm", paste0("full_output_table_2023-08-17.rda")))
+res.logit <- readRDS(here("results", "conventional_glm", paste0("full_output_table_2023-12-06.rda")))
 ```
 
 ```{r, eval = F}
@@ -696,6 +969,9 @@ pipe_logistic_reg <- function(outcome, exposure, data, demographics, subject_mat
   
   # Fit a naive model
   lr.mod.naive <- glm(data = data, formula = as.formula(paste0(outcome, " ~ ", exposure)), family = "binomial")
+  
+  # Fit a demographic-adjusted model
+  lr.mod.age.sex <- glm(data = dat.ea, formula = as.formula(paste0(outcome, " ~ ", exposure, " + ", paste(c("NAGE", "GENDER"), collapse = " + "))), family = "binomial")
   
   # Fit a demographic-adjusted model
   lr.mod.demo <- glm(data = dat.ea, formula = as.formula(paste0(outcome, " ~ ", exposure, " + ", paste(demographics, collapse = " + "))), family = "binomial")
@@ -710,6 +986,7 @@ pipe_logistic_reg <- function(outcome, exposure, data, demographics, subject_mat
   # Collate results with exponentiation and 95% confidence intervals
   res.list <- list(
     Unadjusted = tidy(lr.mod.naive, exponentiate = T, conf.int = T) %>% mutate(Model = "Unadjusted") %>% mutate(Outcome = outcome),
+    AgeSex = tidy(lr.mod.age.sex, exponentiate = T, conf.int = T) %>% mutate(Model = "Age and sex") %>% mutate(Outcome = outcome),
     Demographics = tidy(lr.mod.demo, exponentiate = T, conf.int = T) %>% mutate(Model = "Demographics") %>% mutate(Outcome = outcome),
     Subject = tidy(lr.mod.demo.subject.matter, exponentiate = T, conf.int = T) %>% mutate(Model = "Subject") %>% mutate(Outcome = outcome),
     Fully = tidy(lr.mod.full, exponentiate = T, conf.int = T) %>% mutate(Model = "Fully") %>% mutate(Outcome = outcome)
@@ -803,6 +1080,14 @@ ivglm_model_iterate <- function(outcome,
                                    ancestry = ancestry,
                                    covariates = combined.pgs.covariates
                                    )
+   # Fit an age, sex, and genetics PCs model
+  mod.age.sex <- ivglm_model_exp_num(variant = variant,
+                                   exposure = exposure,
+                                   outcome = outcome,
+                                   data = data,
+                                   ancestry = ancestry,
+                                   covariates = c(combined.pgs.covariates, "NAGE", "GENDER")
+                                   )
   # Fit a demographic-adjusted model
   mod.demographics <- ivglm_model_exp_num(variant = variant,
                                    exposure = exposure,
@@ -830,6 +1115,7 @@ ivglm_model_iterate <- function(outcome,
   # Collate results, already exponentiated w/ 95% CIs from ivglm_model_exp_num function
   res.list <- list(
     Unadjusted = mod.naive %>% mutate(Model = "Unadjusted") %>% mutate(Outcome = outcome) %>% mutate(Method = variant) %>% filter(model == "ts"),
+    AgeSex =  mod.age.sex %>% mutate(Model = "Age and sex") %>% mutate(Outcome = outcome) %>% mutate(Method = variant) %>% filter(model == "ts"),
     Demographics = mod.demographics %>% mutate(Model = "Demographics") %>% mutate(Outcome = outcome) %>% mutate(Method = variant) %>% filter(model == "ts"),
     Subject =  mod.subject %>% mutate(Model = "Subject") %>% mutate(Outcome = outcome) %>% mutate(Method = variant) %>% filter(model == "ts"),
     Fully = mod.full %>% mutate(Model = "Fully") %>% mutate(Outcome = outcome) %>% mutate(Method = variant) %>% filter(model == "ts")
@@ -838,6 +1124,7 @@ ivglm_model_iterate <- function(outcome,
   return(res.list)
 }
 
+outcome.list <- c("AD12.Dementia.outcome", "AD12.CIND.outcome", "AD12.binary")
 variants.select <- c("pgs.norm", "PGS4_DPW_GSCAN19", "rs1229984")
 ```
 
