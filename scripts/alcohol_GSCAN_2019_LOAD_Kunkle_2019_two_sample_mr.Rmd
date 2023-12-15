@@ -9,7 +9,9 @@ output: html_document
 library(devtools)
 library(DiagrammeR)
 library(DiagrammeRsvg)
+library(ggrepel)
 library(glue)
+library(gt)
 library(gtsummary)
 library(here)
 library(knitr)
@@ -22,9 +24,9 @@ library(tidyverse)
 #remotes::install_github("qingyuanzhao/mr.raps")
 library(mr.raps)
 #devtools::install_github("WSpiller/RadialMR")
-library(RadialMR)
-devtools::install_github("explodecomputer/tryx")
-library(tryx)
+#library(RadialMR)
+#devtools::install_github("explodecomputer/tryx")
+#library(tryx)
 #remotes::install_github("MRCIEU/TwoSampleMR")
 library(TwoSampleMR)
 
@@ -359,7 +361,8 @@ res.or <- generate_odds_ratios(res)
 res.or
 ```
 
-```{r format_and_export_primary_2smr_results}
+Need to manually enter into console to successfully render to R output
+```{r format_and_export_primary_2smr_results, eval = F}
 res.or %>%
   dplyr::select(!id.exposure:exposure) %>%
   dplyr::select(!c(nsnp, b, se, lo_ci, up_ci)) %>%
@@ -381,7 +384,24 @@ No significant results with any of the default MR tests in TwoSampleMR. Simple m
 
 ```{r}
 p1 <- mr_scatter_plot(res, dat)
-p1[[1]]
+
+gg.data <- p1$`o2RHw7.ieu-b-2`$data %>%
+  dplyr::mutate(label = ifelse(
+    abs(beta.exposure) > 0.02 | abs(beta.outcome) > 0.03,
+    T,
+    F
+  ))
+
+p1[[1]] + ylab("SNP effect on Alzheimer's disease (OR)") + xlab("SNP effect on alcohol consumption (OR)") +
+  geom_text_repel(
+    data = gg.data,
+    aes(
+        x = beta.exposure,
+        y = beta.outcome,
+        label = ifelse(label, SNP, "")
+      )) +
+  theme(legend.title = element_text("Mendelian randomization test"))
+#ggsave(here("results", "analytic", "twoSampleMR_image_exports", "2smr_primary_results.png"))
 ```
 
 Heterogeneity in effects, suggesting violating of IV or modeling assumptions, likely due to horizontal pleiotropy. Further discussion here: https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6659376/. Similar Q statistics for the IVW and MR Egger suggest the Egger is a no better fit than IVW.
@@ -406,7 +426,8 @@ LOO suggests there may be a few extreme outliers.
 ```{r}
 res_loo <- mr_leaveoneout(dat)
 p3 <- mr_leaveoneout_plot(res_loo)
-p3[[1]]
+p3[[1]] + xlab("Effect size") + ggtitle("Leave-one-out")
+#ggsave(here("results", "analytic", "twoSampleMR_image_exports", "2smr_loo.png"))
 ```
 
 Export genetic instruments for 1-sample MR and PGS analysis
