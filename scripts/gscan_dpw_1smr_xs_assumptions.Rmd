@@ -109,7 +109,7 @@ lr_mod <-
   set_engine("glm")
 ```
 
-## European Ancestry
+## European ancestries
 ### Drinks per week exposure (log-transformed)
 Fit all relevance models for naive, ancestryPCs, demographic, and full models
 ```{r}
@@ -129,7 +129,7 @@ ggplot(data = res_relevance_ea %>% filter(str_detect(Instrument, "^rs[0-9]")),
        mapping = aes(x = graph_F, color = Model, fill = Model)) +
   geom_histogram() +
   facet_wrap(facets = vars(Model)) +
-  ggtitle(ggtitle(paste0("European ancestry histogram of instrument F-statistics, n = ", dim(dat.ea)[1])))
+  ggtitle(ggtitle(paste0("European ancestries histogram of instrument F-statistics, n = ", dim(dat.ea)[1])))
 ```
 
 Report descriptives
@@ -137,22 +137,22 @@ Report descriptives
 res_relevance_ea %>% filter(str_detect(Instrument, "^rs[0-9]")) %>% filter(Model == "Full") %>% pull(graph_F) %>% mean
 res_relevance_ea %>% filter(str_detect(Instrument, "^rs[0-9]")) %>% filter(Model == "Full") %>% pull(graph_F) %>% sd
 
-res_relevance_ea %>% filter(str_detect(Instrument, "^rs[0-9]")) %>% filter(Model == "Unadjusted") %>% pull(graph_F) %>% mean
-res_relevance_ea %>% filter(str_detect(Instrument, "^rs[0-9]")) %>% filter(Model == "Unadjusted") %>% pull(graph_F) %>% sd
+res_relevance_ea %>% filter(str_detect(Instrument, "^rs[0-9]")) %>% filter(Model == "Demographics") %>% pull(graph_F) %>% mean
+res_relevance_ea %>% filter(str_detect(Instrument, "^rs[0-9]")) %>% filter(Model == "Demographics") %>% pull(graph_F) %>% sd
 ```
 
 
 ```{r}
 ggplot(data = dat.ea, mapping = aes(x = PGS4_DPW_GSCAN19, y = logdrinkpweek)) + geom_point() + geom_smooth(method='lm', formula= y~x) +
   stat_cor() +
-  ggtitle(paste0("European ancestry regress DPW on PGS4_DPW_GSCAN19, n = ", dim(dat.ea)[1]))
+  ggtitle(paste0("European ancestries regress DPW on PGS4_DPW_GSCAN19, n = ", dim(dat.ea)[1]))
 
 ggplot(data = dat.ea, mapping = aes(x = pgs.norm, y = logdrinkpweek)) + geom_point() + geom_smooth(method='lm', formula= y~x) +
   stat_cor() +
-  ggtitle(paste0("European ancestry regress log-DPW on pgs.norm, n = ", dim(dat.ea)[1]))
+  ggtitle(paste0("European ancestries regress log-DPW on pgs.norm, n = ", dim(dat.ea)[1]))
 ```
 
-## African ancestry population - relevance
+## African ancestries population - relevance
 ### Drinks per week exposure
 
 Fit all relevance models for naive, ancestryPCs, demographic, and full models
@@ -162,8 +162,8 @@ res_relevance_aa <- fit_relevance_models(instruments = genetics, exposure = "log
 
 Report descriptives
 ```{r}
-res_relevance_aa %>% filter(str_detect(Instrument, "^rs[0-9]")) %>% filter(Model == "Full") %>% pull(graph_F) %>% mean
-res_relevance_aa %>% filter(str_detect(Instrument, "^rs[0-9]")) %>% filter(Model == "Full") %>% pull(graph_F) %>% sd
+res_relevance_aa %>% filter(str_detect(Instrument, "^rs[0-9]")) %>% filter(Model == "Demographics") %>% pull(graph_F) %>% mean
+res_relevance_aa %>% filter(str_detect(Instrument, "^rs[0-9]")) %>% filter(Model == "Demographics") %>% pull(graph_F) %>% sd
 
 res_relevance_aa %>% filter(str_detect(Instrument, "^rs[0-9]")) %>% filter(Model == "Unadjusted") %>% pull(graph_F) %>% mean
 res_relevance_aa %>% filter(str_detect(Instrument, "^rs[0-9]")) %>% filter(Model == "Unadjusted") %>% pull(graph_F) %>% sd
@@ -175,14 +175,14 @@ ggplot(data = res_relevance_aa,
        mapping = aes(x = graph_F, color = Model, fill = Model)) +
   geom_histogram() +
   facet_wrap(facets = vars(Model)) +
-  ggtitle(ggtitle(paste0("African ancestry histogram of instrument F-statistics, n = ", dim(dat.aa)[1])))
+  ggtitle(ggtitle(paste0("African ancestries histogram of instrument F-statistics, n = ", dim(dat.aa)[1])))
 
 print(res_relevance_aa %>% filter(Instrument == "PGS4_DPW_GSCAN19"))
 
 print(res_relevance_aa %>% filter(Instrument == "pgs.norm"))
 
 ggplot(data = dat.aa, mapping = aes(x = PGS4_DPW_GSCAN19, y = drinkpweek)) + geom_point() + geom_smooth(method='lm', formula= y~x) +
-  ggtitle(paste0("African ancestry regress DPW on PGS4, n = ", dim(dat.aa)[1]))
+  ggtitle(paste0("African ancestries regress DPW on PGS4, n = ", dim(dat.aa)[1]))
 ```
 
 ## Relevance figure
@@ -193,7 +193,8 @@ geom.point.alpha = 0.5
 relevance.dat.ea <- res_relevance_ea %>% mutate(Ancestry = "European ancestry")
 relevance.dat.aa <- res_relevance_aa %>% mutate(Ancestry = "African ancestry")
 
-relevance.dat <- bind_rows(relevance.dat.aa, relevance.dat.ea) %>%
+relevance.dat.pre <- bind_rows(relevance.dat.aa, relevance.dat.ea) %>%
+  #mutate(Ancestry = factor(Ancestry, levels = c("African ancestries", "European ancestries"), labels = c("African ancestries", "European ancestries"))) %>%
   mutate(Instrument = ifelse(
     Instrument == "PGS4_DPW_GSCAN19",
     "Whole genome polygenic score",
@@ -203,8 +204,13 @@ relevance.dat <- bind_rows(relevance.dat.aa, relevance.dat.ea) %>%
     Instrument == "pgs.norm",
     "Candidate SNP polygenic score",
     Instrument
-  )) %>%
-  arrange(Instrument)
+  )) %>% 
+  mutate(Instrument = factor(Instrument))
+
+rsids <- levels(relevance.dat.pre$Instrument)[relevance.dat.pre$Instrument %>% levels %>% grep(pattern = "rs")]
+
+relevance.dat <- relevance.dat.pre %>%
+  mutate(Instrument = factor(Instrument, levels = c(rsids, "Candidate SNP polygenic score", "Whole genome polygenic score")))
 ```
 
 
@@ -233,7 +239,9 @@ ggplot(data = relevance.dat,
     size = 4
   ))
 
-ggsave(width = 1920, height = 1080, units = "px", filename = here("results", "one_smr", paste0(Sys.Date(), "_relevance_test.png")))
+#ggsave(here("results", "one_smr", paste0(Sys.Date(), "_relevance_test.png")), dpi = 300)
+
+#ggsave(width = 1920, height = 1080, units = "px", filename = here("results", "one_smr", paste0(Sys.Date(), "_relevance_test.png")))
 ```
 
 
@@ -250,14 +258,14 @@ ggplot(data = res_relevance_aa_log,
        mapping = aes(x = graph_F, color = Model, fill = Model)) +
   geom_histogram() +
   facet_wrap(facets = vars(Model)) +
-  ggtitle(ggtitle(paste0("African ancestry histogram of instrument F-statistics, n = ", dim(dat.aa)[1])))
+  ggtitle(ggtitle(paste0("African ancestries histogram of instrument F-statistics, n = ", dim(dat.aa)[1])))
 
 print(res_relevance_aa_log %>% filter(Instrument == "PGS4_DPW_GSCAN19"))
 
 print(res_relevance_aa_log %>% filter(Instrument == "pgs.norm"))
 
 ggplot(data = dat.aa, mapping = aes(x = PGS4_DPW_GSCAN19, y = logdrinkpweek)) + geom_point() + geom_smooth(method='lm', formula= y~x) +
-  ggtitle(paste0("African ancestry regress log-transformed DPW on PGS4, n = ", dim(dat.aa)[1]))
+  ggtitle(paste0("African ancestries regress log-transformed DPW on PGS4, n = ", dim(dat.aa)[1]))
 ```
 
 
@@ -276,13 +284,13 @@ ggplot(data = res_relevance_ea_all,
        mapping = aes(x = graph_F, color = Model, fill = Model)) +
   geom_histogram() +
   facet_wrap(facets = vars(Model)) +
-  ggtitle(ggtitle(paste0("European ancestry histogram of instrument F-statistics, n = ", dim(dat.ea)[1])))
+  ggtitle(ggtitle(paste0("European ancestries histogram of instrument F-statistics, n = ", dim(dat.ea)[1])))
 
 
 
 #ggplot(data = dat.all.ea, mapping = aes(x = pgs.norm, y = logdrinkpweek)) + geom_point() + geom_smooth(method='lm', formula= y~x) +
 #  stat_cor() +
-#  ggtitle(paste0("European ancestry regress DPW on PGS4, n = ", dim(dat.all.ea)[1]))
+#  ggtitle(paste0("European ancestries regress DPW on PGS4, n = ", dim(dat.all.ea)[1]))
 ```
 
 ```{r, eval=FALSE, include=FALSE}
@@ -317,7 +325,7 @@ ggplot(data = res_relevance_ea_drinkers,
        mapping = aes(x = graph_F, color = Model, fill = Model)) +
   geom_histogram() +
   facet_wrap(facets = vars(Model)) +
-  ggtitle(ggtitle(paste0("European ancestry drinkers histogram of instrument F-statistics, n = ", dim(dat.ea)[1])))
+  ggtitle(ggtitle(paste0("European ancestries drinkers histogram of instrument F-statistics, n = ", dim(dat.ea)[1])))
 
 print(res_relevance_ea_drinkers %>% filter(Instrument == "PGS4_DPW_GSCAN19"))
 
@@ -325,7 +333,7 @@ print(res_relevance_ea_drinkers %>% filter(Instrument == "pgs.norm"))
 
 ggplot(data = dat.ea %>% filter(everdrank == T), mapping = aes(x = pgs.norm, y = drinkpweek)) + geom_point() + geom_smooth(method='lm', formula= y~x) +
   stat_cor() +
-  ggtitle(paste0("European ancestry regress DPW on PGS4, n = ", dim(dat.ea %>% filter(everdrank == T))[1]))
+  ggtitle(paste0("European ancestries regress DPW on PGS4, n = ", dim(dat.ea %>% filter(everdrank == T))[1]))
 ```
 
 #### Hypothesis: if PGSCAN GWAS excluded not current drinkers or who quit before study measurement were set to missing -> better performance in not current drinkers
@@ -354,7 +362,7 @@ ggplot(data = res_relevance_ea_drinkers,
        mapping = aes(x = graph_F, color = Model, fill = Model)) +
   geom_histogram() +
   facet_wrap(facets = vars(Model)) +
-  ggtitle(ggtitle(paste0("European ancestry current drinkers histogram of instrument F-statistics, n = ", dim(dat.ea)[1])))
+  ggtitle(ggtitle(paste0("European ancestries current drinkers histogram of instrument F-statistics, n = ", dim(dat.ea)[1])))
 
 print(res_relevance_ea_drinkers %>% filter(Instrument == "PGS4_DPW_GSCAN19"))
 
@@ -362,7 +370,7 @@ print(res_relevance_ea_drinkers %>% filter(Instrument == "pgs.norm"))
 
 ggplot(data = dat.ea %>% filter(R11DRINK == 1), mapping = aes(x = PGS4_DPW_GSCAN19, y = drinkpweek)) + geom_point() + geom_smooth(method='lm', formula= y~x) +
   stat_cor() +
-  ggtitle(paste0("European ancestry regress DPW on PGS4, n = ", dim(dat.ea %>% filter(R11DRINK == 1))[1]))
+  ggtitle(paste0("European ancestries regress DPW on PGS4, n = ", dim(dat.ea %>% filter(R11DRINK == 1))[1]))
 ```
 
 https://stats.stackexchange.com/questions/64152/are-two-pearson-correlation-coefficients-different
@@ -416,14 +424,14 @@ ggplot(data = res_relevance_ea_dpw_lt_40_dpw_lt_40,
        mapping = aes(x = graph_F, color = Model, fill = Model)) +
   geom_histogram() +
   facet_wrap(facets = vars(Model)) +
-  ggtitle(ggtitle(paste0("<40 DPW European ancestry histogram of instrument F-statistics, n = ", dim(dat.ea %>% filter(drinkpweek < 40))[1])))
+  ggtitle(ggtitle(paste0("<40 DPW European ancestries histogram of instrument F-statistics, n = ", dim(dat.ea %>% filter(drinkpweek < 40))[1])))
 
 print(res_relevance_ea_dpw_lt_40_dpw_lt_40 %>% filter(Instrument == "PGS4_DPW_GSCAN19"))
 
 print(res_relevance_ea_dpw_lt_40_dpw_lt_40 %>% filter(Instrument == "pgs.norm"))
 
 ggplot(data = dat.ea %>% filter(drinkpweek < 40), mapping = aes(x = PGS4_DPW_GSCAN19, y = drinkpweek)) + geom_point() + geom_smooth(method='lm', formula= y~x) +
-  ggtitle(paste0("European ancestry regress DPW on PGS4, n = ", dim(dat.ea %>% filter(drinkpweek < 40))[1]))
+  ggtitle(paste0("European ancestries regress DPW on PGS4, n = ", dim(dat.ea %>% filter(drinkpweek < 40))[1]))
 ```
 
 ### Log-transformed drinks per week exposure
@@ -438,14 +446,14 @@ ggplot(data = res_relevance_ea_log,
        mapping = aes(x = graph_F, color = Model, fill = Model)) +
   geom_histogram() +
   facet_wrap(facets = vars(Model)) +
-  ggtitle(ggtitle(paste0("European ancestry histogram of instrument F-statistics, n = ", dim(dat.ea)[1])))
+  ggtitle(ggtitle(paste0("European ancestries histogram of instrument F-statistics, n = ", dim(dat.ea)[1])))
 
 print(res_relevance_ea_log %>% filter(Instrument == "PGS4_DPW_GSCAN19"))
 
 print(res_relevance_ea_log %>% filter(Instrument == "pgs.norm"))
 
 ggplot(data = dat.ea, mapping = aes(x = PGS4_DPW_GSCAN19, y = logdrinkpweek)) + geom_point() + geom_smooth(method='lm', formula= y~x) +
-  ggtitle(paste0("European ancestry regress log-transformed DPW on PGS4, n = ", dim(dat.ea)[1]))
+  ggtitle(paste0("European ancestries regress log-transformed DPW on PGS4, n = ", dim(dat.ea)[1]))
 ```
 
 # Exclusion
@@ -467,7 +475,7 @@ tidy_parsnip_map_lr <- function(fit, map.x) {
 }
 ```
 
-## European ancestry - Dementia
+## European ancestries - Dementia
 Warning: glm.fit: fitted probabilities numerically 0 or 1 occurred, 22 times
 ```{r}
 fit <-
@@ -485,11 +493,11 @@ fit <-
 #View(predict(fit.GSCAN, dat.ea, type = "prob"))
 
 res_dementia_ea <- tidy_parsnip_map_lr(fit) %>%
-  mutate(Ancestry = "European Ancestry") %>%
+  mutate(Ancestry = "European Ancestries") %>%
   mutate(outcome = "Dementia")
 ```
 
-## European ancestry - CIND
+## European ancestries - CIND
 ```{r}
 fit <-
   map(
@@ -500,12 +508,12 @@ fit <-
   )
 
 res_cind_ea <- tidy_parsnip_map_lr(fit) %>%
-  mutate(Ancestry = "European Ancestry") %>%
+  mutate(Ancestry = "European Ancestries") %>%
   mutate(outcome = "CIND")
 ```
 
 
-## African ancestry - Dementia
+## African ancestries - Dementia
 ```{r}
 fit <-
   map(
@@ -522,11 +530,11 @@ fit <-
 #View(predict(fit.GSCAN, dat.aa, type = "prob"))
 
 res_dementia_aa <- tidy_parsnip_map_lr(fit) %>%
-  mutate(Ancestry = "African Ancestry") %>%
+  mutate(Ancestry = "African Ancestries") %>%
   mutate(outcome = "Dementia")
 ```
 
-## African ancestry - CIND
+## African ancestries - CIND
 ```{r}
 fit <-
   map(
@@ -537,7 +545,7 @@ fit <-
   )
 
 res_cind_aa <- tidy_parsnip_map_lr(fit) %>%
-  mutate(Ancestry = "African Ancestry") %>%
+  mutate(Ancestry = "African Ancestries") %>%
   mutate(outcome = "CIND")
 ```
 
@@ -547,6 +555,19 @@ instruments.to.label <- c("pgs.norm", "PGS4_DPW_GSCAN19", "rs1229984")
 exclusion.dat <- bind_rows(res_cind_ea, res_dementia_ea, res_cind_aa, res_dementia_aa)
 exclusion.dat$p.value.adj <- p.adjust(exclusion.dat$p.value, method = "fdr")
 exclusion.dat$label[(exclusion.dat$Instrument %in% instruments.to.label)] <- T
+exclusion.dat <- exclusion.dat %>%
+  mutate(Instrument = ifelse(
+    Instrument == "pgs.norm",
+    "Candidate SNP polygenic score",
+    Instrument)) %>%
+  mutate(Instrument = ifelse(
+    Instrument == "PGS4_DPW_GSCAN19",
+    "Whole genomice polygenic socre",
+    Instrument)) %>%
+  mutate(label = ifelse(
+    -log10(p.value) > 1.3,
+    T, label
+  ))
 ```
 
 ```{r}
@@ -565,7 +586,7 @@ ggplot(data = exclusion.dat,
         label = ifelse(label, Instrument, "")
       ), size = 3) +
   ggtitle("Logistic regression coefficient test of exclusion") +
-  #labs(caption = paste0(ancestry.hits.truncated.num, " additional ancestry hits truncated")) +
+  #labs(caption = paste0(ancestry.hits.truncated.num, " additional ancestries hits truncated")) +
   xlab("Instrument") +
   ylab("-log10 p-value") +
   facet_wrap(facets = vars(Ancestry)) +
@@ -576,11 +597,12 @@ ggplot(data = exclusion.dat,
     vjust = 1
   ))
 
+#ggsave(filename = here("results", "one_smr", paste0(Sys.Date(), "_exclusion_test.png")))
 #ggsave(width = 1920, height = 1080, units = "px", filename = here("results", "one_smr", paste0(Sys.Date(), "_exclusion_test.png")))
 ```
 
 # Exogeneity
-## European Ancestry
+## European ancestries
 ##Fit instrument -> covariate
 ```{r}
 independent.vars <- c("NAGE", "GENDER", "DEGREE", "APOE012", "R11SMOKEV", "NMARST", "R11CESD", "R11CONDE", "R11SAYRET", "AncestryPC_1_5A", "AncestryPC_1_5B", "AncestryPC_1_5C", "AncestryPC_1_5D", "AncestryPC_1_5E")
@@ -620,12 +642,23 @@ fit_glance_df_ea <-
  rowwise() %>%
  mutate(predictor = strsplit(Instrument,"+", fixed = T)[[1]][2]) %>%
  mutate(Instrument = strsplit(Instrument,"+", fixed = T)[[1]][1]) %>%
-  dplyr::select(Instrument, predictor, everything())
+  dplyr::select(Instrument, predictor, everything()) %>%
+  mutate(Instrument = ifelse(
+    Instrument == "PGS4_DPW_GSCAN19",
+    "Whole genome polygenic score",
+    Instrument
+  )) %>%
+  mutate(Instrument = ifelse(
+    Instrument == "pgs.norm",
+    "Candidate SNP polygenic score",
+    Instrument
+  )) %>%
+  mutate(Instrument = factor(Instrument, levels = c(rsids, "Candidate SNP polygenic score", "Whole genome polygenic score")))
 ```
 
 ```{r}
 ancestry.hits.truncated.num.ea <- fit_glance_df_ea %>% filter(-log10(F.p.value) > 12) %>% nrow %>% as.numeric()
-ggplot(data = fit_glance_df_ea, mapping = aes(x = Instrument, y = -log10(F.p.value), color = predictor)) + geom_point(alpha = 0.5) + ylim(c(0, 12)) + geom_hline(yintercept = 1.3, linetype = 'dotted') + ggtitle("Simple F-test of exogeneity", subtitle = paste0("European Ancestry, n = ", nrow(dat.ea))) + labs(caption = paste0(ancestry.hits.truncated.num.ea, " additional ancestry hits truncated")) + xlab("Instrument") + ylab("-log10 p-value") + theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1, size = 5))
+ggplot(data = fit_glance_df_ea, mapping = aes(x = Instrument, y = -log10(F.p.value), color = predictor)) + geom_point(alpha = 0.5) + ylim(c(0, 12)) + geom_hline(yintercept = 1.3, linetype = 'dotted') + ggtitle("Simple F-test of exogeneity", subtitle = paste0("European ancestries, n = ", nrow(dat.ea))) + labs(caption = paste0(ancestry.hits.truncated.num.ea, " additional ancestries hits truncated")) + xlab("Instrument") + ylab("-log10 p-value") + theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1, size = 5))
 ```
 
 
@@ -713,7 +746,7 @@ fit_tidy_df %>% group_by(Instrument) %>% filter(Wald.p.value.fdr < 0.05) %>% tal
 ```
 
 ```{r, eval = F, include = F}
-ggplot(data = fit_tidy_df, mapping = aes(x = estimate, y = -log10(Wald.p.value), color = predictor)) + geom_point() + ylim(c(0, 12.5)) + geom_hline(yintercept = 1.3, linetype = 'dotted') + ggtitle("Simple linear regression between instrument dosage and potential linear confounders", subtitle = paste0("European Ancestry, n = ", nrow(dat.ea))) + labs(caption = "Additional ancestry hits truncated") + xlab("Beta coefficient") + ylab("-log10 p-value")
+ggplot(data = fit_tidy_df, mapping = aes(x = estimate, y = -log10(Wald.p.value), color = predictor)) + geom_point() + ylim(c(0, 12.5)) + geom_hline(yintercept = 1.3, linetype = 'dotted') + ggtitle("Simple linear regression between instrument dosage and potential linear confounders", subtitle = paste0("European ancestries, n = ", nrow(dat.ea))) + labs(caption = "Additional ancestries hits truncated") + xlab("Beta coefficient") + ylab("-log10 p-value")
 ```
 
 
@@ -727,7 +760,7 @@ ggplot(data = fit_tidy_df, mapping = aes(x = estimate, y = -log10(Wald.p.value),
 #View(fit_glance_df %>% filter(F.p.value.fdr < 0.05))
 ```
 
-## African Ancestry 
+## African ancestries 
 ### All potential confounders with linear model F-test 
 ```{r}
 # Fit the linear model across all instrument and covariate combinations
@@ -751,12 +784,23 @@ fit_glance_df_aa <-
  rowwise() %>%
  mutate(predictor = strsplit(Instrument,"+", fixed = T)[[1]][2]) %>%
  mutate(Instrument = strsplit(Instrument,"+", fixed = T)[[1]][1]) %>%
-  dplyr::select(Instrument, predictor, everything())
+  dplyr::select(Instrument, predictor, everything()) %>%
+  mutate(Instrument = ifelse(
+    Instrument == "PGS4_DPW_GSCAN19",
+    "Whole genome polygenic score",
+    Instrument
+  )) %>%
+  mutate(Instrument = ifelse(
+    Instrument == "pgs.norm",
+    "Candidate SNP polygenic score",
+    Instrument
+  )) %>%
+  mutate(Instrument = factor(Instrument, levels = c(rsids, "Candidate SNP polygenic score", "Whole genome polygenic score")))
 ```
 
 ```{r}
 ancestry.hits.truncated.num.aa <- fit_glance_df_aa %>% filter(-log10(F.p.value) > 12) %>% nrow %>% as.numeric()
-ggplot(data = fit_glance_df_aa, mapping = aes(x = Instrument, y = -log10(F.p.value), color = predictor)) + geom_point(alpha = 0.5) + ylim(c(0, 12)) + geom_hline(yintercept = 1.3, linetype = 'dotted') + ggtitle("Simple F-test of exogeneity", subtitle = paste0("African Ancestry, n = ", nrow(dat.aa))) + labs(caption = paste0(ancestry.hits.truncated.num.aa, " additional ancestry hits truncated")) + xlab("Instrument") + ylab("-log10 p-value") + theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1, size = 5))
+ggplot(data = fit_glance_df_aa, mapping = aes(x = Instrument, y = -log10(F.p.value), color = predictor)) + geom_point(alpha = 0.5) + ylim(c(0, 12)) + geom_hline(yintercept = 1.3, linetype = 'dotted') + ggtitle("Simple F-test of exogeneity", subtitle = paste0("African ancestries, n = ", nrow(dat.aa))) + labs(caption = paste0(ancestry.hits.truncated.num.aa, " additional ancestries hits truncated")) + xlab("Instrument") + ylab("-log10 p-value") + theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1, size = 5))
 ```
 
 ```{r}
@@ -773,28 +817,94 @@ fit_glance_df_aa %>% group_by(predictor) %>% filter(F.p.value < 0.05) %>% tally(
 fit_glance_df_aa%>% group_by(predictor) %>% filter(F.p.value.fdr < 0.05) %>% tally() %>% pull(n) %>% hist
 ```
 
-## Exogeneity figure
+## Exogeneity figures
 
+Separate analytic figures
 ```{r}
+fit_glance_df_aa <- fit_glance_df_aa %>%
+  mutate(predictor = factor(predictor, levels = c("AncestryPC_1_5A", "AncestryPC_1_5B", "AncestryPC_1_5C", "AncestryPC_1_5D", 
+"AncestryPC_1_5E", "APOE012", "DEGREE", "GENDER", "NAGE", "NMARST", 
+"R11CESD", "R11CONDE", "R11SAYRET", "R11SMOKEV"),
+labels = c("AncestryPC_1_5A", "AncestryPC_1_5B", "AncestryPC_1_5C", "AncestryPC_1_5D", 
+"AncestryPC_1_5E", "APOE status", "Education", "Sex", "Age", "Marital status", 
+"Depressive symptoms", "Comorbidities", "Retirement status", "Ever smoker"))) %>%
+  rename(Predictor = predictor)
+
+exogeneity.manhattan.aa <- ggplot(data = fit_glance_df_aa, mapping = aes(x = Instrument, y = -log10(F.p.value), color = Predictor)) + geom_point(alpha = geom.point.alpha) + ylim(c(0, 12)) + geom_hline(yintercept = 1.3, linetype = 'dotted') + ggtitle("Simple F-test of exogeneity", subtitle = paste0("African ancestries, n = ", nrow(dat.aa))) + labs(caption = paste0(ancestry.hits.truncated.num.aa, " additional ancestries hits truncated")) + xlab("Instrument") + ylab("-log10 p-value") + theme(axis.text.y = element_text(
+    size = 6
+  )) +
+  coord_flip()
+exogeneity.manhattan.aa
+
+#ggsave(dpi = 300, filename = here("results", "one_smr", paste0(Sys.Date(), "_exogeneity_test_aa.png")))
+```
+
+Separate analytic figures
+```{r}
+fit_glance_df_ea <- fit_glance_df_ea %>%
+  mutate(predictor = factor(predictor, levels = c("AncestryPC_1_5A", "AncestryPC_1_5B", "AncestryPC_1_5C", "AncestryPC_1_5D", 
+"AncestryPC_1_5E", "APOE012", "DEGREE", "GENDER", "NAGE", "NMARST", 
+"R11CESD", "R11CONDE", "R11SAYRET", "R11SMOKEV"),
+labels = c("AncestryPC_1_5A", "AncestryPC_1_5B", "AncestryPC_1_5C", "AncestryPC_1_5D", 
+"AncestryPC_1_5E", "APOE status", "Education", "Sex", "Age", "Marital status", 
+"Depressive symptoms", "Comorbidities", "Retirement status", "Ever smoker"))) %>%
+  rename(Predictor = predictor)
+
+exogeneity.manhattan.ea <- ggplot(data = fit_glance_df_ea, mapping = aes(x = Instrument, y = -log10(F.p.value), color = Predictor)) + geom_point(alpha = geom.point.alpha) + ylim(c(0, 12)) + geom_hline(yintercept = 1.3, linetype = 'dotted') + ggtitle("Simple F-test of exogeneity", subtitle = paste0("European ancestries, n = ", nrow(dat.ea))) + labs(caption = paste0(ancestry.hits.truncated.num.ea, " additional ancestries hits truncated")) + xlab("Instrument") + ylab("-log10 p-value") + theme(axis.text.y = element_text(
+    size = 6
+  )) +
+  coord_flip()
+exogeneity.manhattan.ea
+
+#ggsave(dpi = 300, filename = here("results", "one_smr", paste0(Sys.Date(), "_exogeneity_test_ea.png")))
+```
+
+```{r, eval = F}
 base.size = 24
 geom.point.size = 6
 geom.point.alpha = 0.75
-``` 
-
-```{r}
-exogeneity.manhattan.aa <- ggplot(data = fit_glance_df_aa, mapping = aes(x = Instrument, y = -log10(F.p.value), color = predictor)) + geom_point(alpha = geom.point.alpha, size = geom.point.size) + ylim(c(0, 12)) + geom_hline(yintercept = 1.3, linetype = 'dotted') + ggtitle("Simple F-test of exogeneity", subtitle = paste0("African Ancestry, n = ", nrow(dat.aa))) + labs(caption = paste0(ancestry.hits.truncated.num.aa, " additional ancestry hits truncated")) + xlab("Instrument") + ylab("-log10 p-value") + theme_minimal(base_size = base.size) + theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1))
-```
-
-```{r}
-exogeneity.manhattan.ea <- ggplot(data = fit_glance_df_ea, mapping = aes(x = Instrument, y = -log10(F.p.value), color = predictor)) + geom_point(alpha = geom.point.alpha, size = geom.point.size) + ylim(c(0, 12)) + geom_hline(yintercept = 1.3, linetype = 'dotted') + ggtitle("Simple F-test of exogeneity", subtitle = paste0("European Ancestry, n = ", nrow(dat.ea))) + labs(caption = paste0(ancestry.hits.truncated.num.ea, " additional ancestry hits truncated")) + xlab("Instrument") + ylab("-log10 p-value") + theme_minimal(base_size = base.size) + theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1))
-```
-
-```{r}
 library(ggpubr)
 #exogeneity.manhattan.ea
 #exogeneity.manhattan.aa
+exogeneity.manhattan.aa <- ggplot(data = fit_glance_df_aa, mapping = aes(x = Instrument, y = -log10(F.p.value), color = predictor)) + geom_point(alpha = geom.point.alpha, size = geom.point.size) + ylim(c(0, 12)) + geom_hline(yintercept = 1.3, linetype = 'dotted') + ggtitle("Simple F-test of exogeneity", subtitle = paste0("African ancestries, n = ", nrow(dat.aa))) + labs(caption = paste0(ancestry.hits.truncated.num.aa, " additional ancestries hits truncated")) + xlab("Instrument") + ylab("-log10 p-value") + theme_minimal(base_size = base.size) + theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1))
 
-panel <- ggarrange(exogeneity.manhattan.aa, exogeneity.manhattan.ea, labels = "auto", common.legend = TRUE, legend = "bottom", font.label = list(size = 24, face = "bold", color = "black"))
+exogeneity.manhattan.ea <- ggplot(data = fit_glance_df_ea, mapping = aes(x = Instrument, y = -log10(F.p.value), color = predictor)) + geom_point(alpha = geom.point.alpha, size = geom.point.size) + ylim(c(0, 12)) + geom_hline(yintercept = 1.3, linetype = 'dotted') + ggtitle("Simple F-test of exogeneity", subtitle = paste0("European ancestries, n = ", nrow(dat.ea))) + labs(caption = paste0(ancestry.hits.truncated.num.ea, " additional ancestries hits truncated")) + xlab("Instrument") + ylab("-log10 p-value") + theme_minimal(base_size = base.size) + theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1))
+
+#panel <- ggarrange(exogeneity.manhattan.aa, exogeneity.manhattan.ea, labels = "auto", common.legend = TRUE, legend = "bottom", font.label = list(size = 24, face = "bold", color = "black"))
 #ggexport(panel, width = 1920, height = 1080, filename = here("results", "one_smr", paste0(Sys.Date(), "_exogeneity_test.png")))
 ```
+
+Try facet_wrap instead
+```{r}
+glance_res_all <- rbind(fit_glance_df_aa %>% mutate(Ancestry = "African ancestries"), fit_glance_df_ea %>% mutate(Ancestry = "European ancestries"))
+```
+
+```{r}
+ggplot(data = glance_res_all,
+       mapping = aes(
+         x = Instrument,
+         y = -log10(F.p.value),
+         color = predictor
+       )) +
+  geom_point(alpha = geom.point.alpha) + #, size = geom.point.size) +
+  geom_hline(yintercept = -log10(0.05), linetype = 'dotted') +
+  ggtitle("Simple F-test of exogeneity") +
+  xlab("Instrument") +
+  ylab("-log10(p-value)") +
+  facet_wrap(facets = vars(Ancestry)) +
+  coord_flip() +
+  #theme_minimal(base_size = base.size) +
+  #theme(axis.text.x = element_text(
+  #  size = 5,
+  #  angle = 45,
+  #  hjust = 1,
+  #  vjust = 1
+  #))
+  theme(axis.text.y = element_text(
+    size = 4
+  )) +
+  ylim(c(0, 12))
+ggsave(dpi=300, filename = here("results", "one_smr", paste0(Sys.Date(), "_exogeneity_test.png")))
+```
+
 
