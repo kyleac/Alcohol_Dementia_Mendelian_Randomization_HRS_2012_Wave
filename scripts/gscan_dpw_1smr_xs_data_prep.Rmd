@@ -83,6 +83,7 @@ hrs <- readRDS(here("data", "2022-08-18_data_prep_alcohol_dementia.rda"))
 hrs <-
   hrs %>%
   #filter(NIWWAVE == 1) %>% # limit to 2012 wave
+  filter(NIWWAVE == 1) %>% # limit to 2012 wave
   mutate(AD12 = factor_cog_lw(AD12)) %>% # format cognition variable
   mutate(drinkpweek = R11DRINKD * R11DRINKN) %>%
   mutate(logdrinkpweek = log1p(drinkpweek)) %>% # logtransform drinkpweek w/ 1p to account for 0s
@@ -114,21 +115,21 @@ hrs <-
     )
   ) %>%
   #mutate(DEGREE = ordered(DEGREE, levels = c("No degree", "High school/GED/Some college", "Two year college degree or greater"))) %>%
-  rowwise() %>%
+  #rowwise() %>%
   # Define an everdrinks variable 
-  mutate(everdrinks = case_when(
+  #mutate(everdrinks = case_when(
     # If all RAND currently drinks variables are missing, assign missing, otherwise, add the number of waves responded with currently drinks
-    is.na(R3DRINK) & is.na(R4DRINK) & is.na(R5DRINK) & is.na(R6DRINK) & is.na(R7DRINK) & is.na(R8DRINK) & is.na(R9DRINK) & is.na(R10DRINK) & is.na(R11DRINK) == TRUE ~ NA_real_,
-    TRUE ~ sum(c_across(matches("R\\d+DRINK$")), na.rm = TRUE)
-  )) %>%
+    #is.na(R3DRINK) & is.na(R4DRINK) & is.na(R5DRINK) & is.na(R6DRINK) & is.na(R7DRINK) & is.na(R8DRINK) & is.na(R9DRINK) & is.na(R10DRINK) & is.na(R11DRINK) == TRUE ~ NA_real_,
+    #TRUE ~ sum(c_across(matches("R\\d+DRINK$")), na.rm = TRUE)
+  #)) %>%
   # Define an everdrank variable, which is simply an indicator variable for the above drinking variable
-  mutate(everdrank = case_when(
-    everdrinks > 0 ~ 1,
-    everdrinks == 0 ~ 0,
-    TRUE ~ NA_real_
-  )) %>%
+  #mutate(everdrank = case_when(
+  #  everdrinks > 0 ~ 1,
+  #  everdrinks == 0 ~ 0,
+  #  TRUE ~ NA_real_
+  #)) %>%
   # Undo the row-wise grouping
-  ungroup() %>%
+  #ungroup() %>%
   mutate(R11DRINKD = as.numeric(R11DRINKD)) %>%
   mutate(R11DRINKN = as.numeric(R11DRINKN)) %>%
   mutate(APOE012 = factor_APOE_012(APOE012)) %>%
@@ -615,9 +616,9 @@ ancestry.aa.snp.count
 ancestry.excluded <- glue("Neither African nor European ancestry
           n = {genetic.subsample.count - ancestry.ea.count - ancestry.aa.count} excluded")
 
-ancestry.ea.glue <- glue("European ancestry
+ancestry.ea.glue <- glue("European ancestries
           n = {ancestry.ea.count}")
-ancestry.aa.glue <- glue("African ancestry
+ancestry.aa.glue <- glue("African ancestries
           n = {ancestry.aa.count}")
 
 genetic.ea <- glue("Complete genetic information
@@ -699,13 +700,13 @@ complete.aa <-
 complete.count.aa <- nrow(complete.aa)
 complete.count.aa
 
-complete.ea.glue <- glue("European ancestry analytic sample
+complete.ea.glue <- glue("European ancestries analytic sample
                    n = {complete.count.ea}")
   
 complete.ea.excluded.glue <- glue("Missing any 2012 covariate information
           n = {exposure.count.ea - complete.count.ea} excluded")
   
-complete.aa.glue <- glue("African ancestry analytic sample
+complete.aa.glue <- glue("African ancestries analytic sample
                    n = {complete.count.aa}")
 
 complete.aa.excluded.glue <- glue("Missing any 2012 covariate information
@@ -901,9 +902,9 @@ ancestry.aa.snp.count
 ancestry.excluded <- glue("Neither African nor European ancestry
           n = {genetic.subsample.count - ancestry.ea.count - ancestry.aa.count} excluded")
 
-ancestry.ea.glue <- glue("European ancestry
+ancestry.ea.glue <- glue("European ancestries
           n = {ancestry.ea.count}")
-ancestry.aa.glue <- glue("African ancestry
+ancestry.aa.glue <- glue("African ancestries
           n = {ancestry.aa.count}")
 
 genetic.ea <- glue("Complete genetic information
@@ -1012,13 +1013,13 @@ complete.aa <-
 complete.count.aa <- nrow(complete.aa)
 complete.count.aa
 
-complete.ea.glue <- glue("European ancestry analytic sample
+complete.ea.glue <- glue("European ancestries analytic sample
                    n = {complete.count.ea}")
   
 complete.ea.excluded.glue <- glue("Missing any 2012 covariate information
           n = {exposure.drinking.count.ea - complete.count.ea} excluded")
   
-complete.aa.glue <- glue("African ancestry analytic sample
+complete.aa.glue <- glue("African ancestries analytic sample
                    n = {complete.count.aa}")
 
 complete.aa.excluded.glue <- glue("Missing any 2012 covariate information
