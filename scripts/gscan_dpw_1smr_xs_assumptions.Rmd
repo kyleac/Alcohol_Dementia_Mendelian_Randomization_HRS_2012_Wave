@@ -676,90 +676,6 @@ fit_glance_df_ea %>% group_by(predictor) %>% filter(F.p.value < 0.05) %>% tally(
 fit_glance_df_ea %>% group_by(predictor) %>% filter(F.p.value.fdr < 0.05) %>% tally() %>% pull(n) %>% hist
 ```
 
-### Unused
-```{r, eval = F, include = F}
-crossed <- crossing(genetics, cont.vars)
-genetics.crossed <- crossed$genetics
-cont.vars.crossed <- crossing(genetics, cont.vars)$cont.vars
-```
-
-```{r, eval = F, include = F}
-# Fit the linear model across all instrument and covariate combinations
-fit <-
-  map2(
-    .x = genetics.crossed,
-    .y = cont.vars.crossed,
-    .f = ~ lm_mod %>%
-      fit(formula(paste0(.y, " ~ ", .x)),
-          data = dat.ea)
-  )
-
-# Tidy results 
-fit_tidy <- map(fit, tidy)
-names(fit_tidy) <- paste0(genetics.crossed, "+", cont.vars.crossed)
-
-# Reformat tidy results
-fit_tidy_df <-
-  bind_rows(fit_tidy, .id = "Instrument") %>%
-  rename("Wald.stat" = statistic, "Wald.p.value" = p.value) %>%
-  filter(!term == "(Intercept)") %>%
-  mutate(Wald.p.value.fdr = p.adjust(Wald.p.value, method = "fdr")) %>%
-  rowwise() %>%
-  mutate(predictor = strsplit(Instrument,"+", fixed = T)[[1]][2]) %>%
-  mutate(Instrument = strsplit(Instrument,"+", fixed = T)[[1]][1]) %>%
-  dplyr::select(Instrument, predictor, everything())
-
-# Collect the results into a data frame
-# Add FDR-adjusted p-value
-# fit_glance <- map(fit, ~ glance(.x))
-# names(fit_glance) <- paste0(genetics.enum, "+", independent.vars.enum)
-# fit_glance_df <-
-#   bind_rows(fit_glance, .id = "Instrument") %>%
-#   rename("F.stat" = statistic, "F.p.value" = p.value) %>%
-#   mutate(F.p.value.fdr = p.adjust(F.p.value, method = "fdr")) %>%
-#   rowwise() %>%
-#   mutate(predictor = strsplit(Instrument,"+", fixed = T)[[1]][2]) %>%
-#   mutate(Instrument = strsplit(Instrument,"+", fixed = T)[[1]][1]) %>%
-#   dplyr::select(Instrument, predictor, everything())
-
-#fit_all <- left_join(fit_res_df, fit_glance_df, by = "Instrument")
-```
-
-```{r, eval = F, include = F}
-fit_tidy_df %>% filter(Instrument %in% c("PGS4_DPW_GSCAN19", "pgs.norm")) %>% filter(Wald.p.value < 0.05) %>% group_by(Instrument) %>% tally()
-fit_tidy_df %>% filter(Instrument %in% c("PGS4_DPW_GSCAN19", "pgs.norm")) %>% filter(Wald.p.value < 0.05) %>% group_by(predictor) %>% tally()
-```
-
-
-```{r, eval = F, include = F}
-fit_tidy_df %>% group_by(Instrument) %>% filter(Wald.p.value < 0.05) %>% tally()
-fit_tidy_df %>% group_by(Instrument) %>% filter(Wald.p.value.fdr < 0.05) %>% tally()
-fit_tidy_df %>% group_by(Instrument) %>% filter(Wald.p.value < 0.05) %>% tally() %>% pull(n) %>% hist
-fit_tidy_df %>% group_by(Instrument) %>% filter(Wald.p.value.fdr < 0.05) %>% tally() %>% pull(n) %>% hist
-```
-
-```{r, eval = F, include = F}
-fit_tidy_df %>% group_by(Instrument) %>% filter(Wald.p.value < 0.05) %>% tally()
-fit_tidy_df %>% group_by(Instrument) %>% filter(Wald.p.value.fdr < 0.05) %>% tally()
-fit_tidy_df %>% group_by(Instrument) %>% filter(Wald.p.value < 0.05) %>% tally() %>% pull(n) %>% hist
-fit_tidy_df %>% group_by(Instrument) %>% filter(Wald.p.value.fdr < 0.05) %>% tally() %>% pull(n) %>% hist
-```
-
-```{r, eval = F, include = F}
-ggplot(data = fit_tidy_df, mapping = aes(x = estimate, y = -log10(Wald.p.value), color = predictor)) + geom_point() + ylim(c(0, 12.5)) + geom_hline(yintercept = 1.3, linetype = 'dotted') + ggtitle("Simple linear regression between instrument dosage and potential linear confounders", subtitle = paste0("European ancestries, n = ", nrow(dat.ea))) + labs(caption = "Additional ancestries hits truncated") + xlab("Beta coefficient") + ylab("-log10 p-value")
-```
-
-
-```{r, eval = F, include = F}
-#fit_glance_df %>% group_by(predictor) %>% filter(F.p.value < 0.05) %>% tally()
-#fit_glance_df %>% group_by(predictor) %>% filter(F.p.value.fdr < 0.05) %>% tally()
-
-#Most associations were for the ancestry PCs
-
-#View(fit_glance_df %>% filter(F.p.value < 0.05))
-#View(fit_glance_df %>% filter(F.p.value.fdr < 0.05))
-```
-
 ## African ancestries 
 ### All potential confounders with linear model F-test 
 ```{r}
@@ -906,5 +822,3 @@ ggplot(data = glance_res_all,
   ylim(c(0, 12))
 ggsave(dpi=300, filename = here("results", "one_smr", paste0(Sys.Date(), "_exogeneity_test.png")))
 ```
-
-
