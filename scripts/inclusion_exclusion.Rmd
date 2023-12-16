@@ -1,5 +1,5 @@
 ---
-title: "01_inclusion_exclusion"
+title: "inclusion_exclusion"
 author: "Kyle Abraham Campbell"
 date: "9/18/2021"
 output: html_document
