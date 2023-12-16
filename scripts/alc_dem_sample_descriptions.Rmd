@@ -273,79 +273,6 @@ inex.table.merged <- tbl_merge(
 #inex.table.merged %>% as_flex_table %>% save_as_docx(path = here("results", "analytic", paste0(Sys.Date(), "_inclusion_exclusion_comparison_by_race.docx")))
 ```
 
-## Inclusion/exclusion comparison - all 2012 participants current drinkers with confirmed ancestry
-### European ancestry
-Get a dataset with dummy selection variable
-```{r}
-included.ea <-
-  ancestry.ea %>%
-  filter(!(drinkpweek == 0)) %>%
-  mutate(Included = ifelse(
-    # Indicator if included
-    HHIDPN %in% dat.ea$HHIDPN,
-    T,
-    F
-  )) %>%
-  mutate(Included = factor(Included, levels = c(F, T), labels = c("Excluded", "Included"))) %>%
-  dplyr::select(HHIDPN, "Included", all_of(univar.variables[!univar.variables == "RACE"])) # Exclude RACE
-```
-
-Included/excluded bivariate table
-```{r}
-tbl_summary_labels_included <- append(tbl_summary_labels_bivar, Included ~ "Included with complete data")
-
-inclusion.exclusion.ea <- 
-  included.ea %>%
-  dplyr::select(!HHIDPN) %>%
-  tbl_summary(
-    by = "Included",
-    label = tbl_summary_labels_included,
-    type = tbl_summary_types) %>%
-  add_n() %>%
-  add_p()
-
-inclusion.exclusion.ea
-```
-
-### African ancestry
-Get a dataset with dummy selection variable
-```{r}
-included.aa <-
-  ancestry.aa %>%
-  filter(!(drinkpweek == 0)) %>%
-  mutate(Included = ifelse(
-    HHIDPN %in% dat.aa$HHIDPN, # Indicator if included
-    T,
-    F
-  )) %>%
-  mutate(Included = factor(Included, levels = c(F, T), labels = c("Excluded", "Included"))) %>%
-  dplyr::select(HHIDPN, "Included", all_of(univar.variables[!univar.variables == "RACE"])) # Exclude RACE
-```
-
-Included/excluded bivariate table
-```{r}
-inclusion.exclusion.aa <- 
-  included.aa %>%
-  dplyr::select(!HHIDPN) %>%
-  tbl_summary(
-    by = "Included",
-    label = tbl_summary_labels_included,
-    type = tbl_summary_types) %>%
-  add_n() %>%
-  add_p()
-
-inclusion.exclusion.aa
-```
-
-```{r}
-inex.table.merged <- tbl_merge(
-  tbls = list(inclusion.exclusion.ea, inclusion.exclusion.aa),
-  tab_spanner = c("Non-Hispanic White, European ancestry", "Non-Hispanic Black, African ancestry")
-)
-
-#inex.table.merged %>% as_flex_table %>% save_as_docx(path = here("results", "analytic", paste0(Sys.Date(), "_inclusion_exclusion_comparison_by_race_current_drinkers.docx")))
-```
-
 ## Exploratory analysis of PGSs
 
 ```{r}
@@ -392,6 +319,3 @@ ggplot(data = dat,
   facet_wrap("RACE") +
   geom_histogram()
 ```
-
-## Explore PGS performance among drinkers and non-drinkers
-

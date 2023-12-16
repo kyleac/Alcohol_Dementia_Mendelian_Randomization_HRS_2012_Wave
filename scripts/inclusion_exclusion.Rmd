@@ -17,7 +17,6 @@ knitr::opts_chunk$set(echo = TRUE)
 
 ```{r, cache=TRUE}
 data = read_sas(here("data", "hrs_democoggen_wide20200910.sas7bdat"))
-#rand = read_sas(here(""))
 ```
 
 genotyped
@@ -146,7 +145,6 @@ ggplot(graph, mapping = aes(drinkpweek, color = AD12)) + geom_density(alpha = 0.
 age.by.ever.drink <- data %>%
   select(HHID, PN, RACE, COG_LAST_NS, AGE_LAST_NS, R11DRINK)
 ```
-
 
 ```{r}
 bivar.data = data %>%
