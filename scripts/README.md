@@ -1,9 +1,6 @@
 # Relationship between alcohol consumption and dementia with Mendelian randomization approaches among older adults in the United States
 
-## Citation Information
-Ware EB, Bustamante ACM, Fu M, Bakulski KM. Type 2 diabetes and dementia in the Health and Retirement Study: A Mendelian randomization approach. Alzheimer’s & Dementia. 2020;16(S10):e041220. doi:https://doi.org/10.1002/alz.041220
-
-This Github repository contains the data management and analytic scripts to produce the following manuscript:[Type 2 diabetes and dementia in the Health and Retirement Study: A Mendelian randomization approach. Alzheimer’s & Dementia](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC8044888/)
+This Github repository contains the data management and analytic scripts to produce the following manuscript:
 
 ## Abstract
 Background: In observational studies, the association between alcohol consumption and dementia is mixed.
